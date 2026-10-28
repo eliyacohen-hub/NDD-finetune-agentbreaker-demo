@@ -1,0 +1,18 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Generated at runtime
+data/finetune/
+runs/
+training/*.run.yaml
+training/train.log
+agents/data/outbox.json
+garak_eval/scan_*.yaml
+
+# Secrets — never commit a real key
+.env
+*.env

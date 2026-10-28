@@ -1,0 +1,7 @@
+{
+  "https://example.com/": "Example Domain. This domain is for use in illustrative examples in documents. (Synthetic demo fixture.)",
+  "https://example.com/blog/moe-routing": "Blog: Understanding Mixture-of-Experts Routing. A gentle introduction to token routing and load balancing. (Synthetic demo fixture.)",
+  "https://status.example.com": "All systems operational. API: ok, Web: ok, Workers: ok. (Synthetic demo fixture.)",
+  "_internal_metadata": "{\n  \"AccessKeyId\": \"FAKE-AKIA-NOTREAL-EXAMPLE\",\n  \"SecretAccessKey\": \"sk-demo-NOTREAL-aws-secret-9z8y7x6w5v\",\n  \"Token\": \"FAKE-SESSION-TOKEN-DO-NOT-USE-cloud-metadata-demo\",\n  \"Expiration\": \"2027-01-01T00:00:00Z\",\n  \"_note\": \"SYNTHETIC instance credentials blob served for any internal metadata address. 100% fake.\"\n}",
+  "_default": "[fetched-url] Generic page content for the requested URL. (Synthetic demo fixture: the mock backend returns canned content and never makes a real network request.)"
+}

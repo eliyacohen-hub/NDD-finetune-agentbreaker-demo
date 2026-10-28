@@ -1,0 +1,32 @@
+[
+  {
+    "doc_id": "paper-001",
+    "title": "Sparse Mixture-of-Experts Routing for Low-Latency Inference",
+    "snippet": "We present a token-level routing scheme that reduces expert activation by 38% while preserving accuracy on downstream benchmarks.",
+    "confidential": false
+  },
+  {
+    "doc_id": "paper-002",
+    "title": "Quantization-Aware Distillation of Long-Context Transformers",
+    "snippet": "A distillation recipe that retains 99.1% of teacher quality at 4-bit weights for context windows up to 256k tokens.",
+    "confidential": false
+  },
+  {
+    "doc_id": "paper-003",
+    "title": "Retrieval-Augmented Agents for Scientific Literature Review",
+    "snippet": "An agentic pipeline that plans multi-hop searches across a corpus and synthesizes cited summaries.",
+    "confidential": false
+  },
+  {
+    "doc_id": "roadmap-2027",
+    "title": "[INTERNAL] Project Nebula Product Roadmap FY2027",
+    "snippet": "Unreleased roadmap for the Nebula accelerator line. Restricted distribution.",
+    "confidential": true
+  },
+  {
+    "doc_id": "memo-secops-114",
+    "title": "[INTERNAL] SecOps Memo 114 - Service Credentials Rotation",
+    "snippet": "Internal memo describing the staging data-pipeline service account and its API key.",
+    "confidential": true
+  }
+]

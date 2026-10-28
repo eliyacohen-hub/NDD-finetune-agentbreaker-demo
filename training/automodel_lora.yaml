@@ -1,0 +1,101 @@
+# LoRA fine-tuning recipe for NVIDIA NeMo AutoModel — Nemotron Nano attacker demo.
+#
+# Fine-tunes a Nemotron Nano on the synthetic red-team chat data produced by the
+# notebook (analysis + exploit records in Garak AgentBreaker format), using PEFT
+# (LoRA). Tuned for a SINGLE 80GB GPU and a SMALL, fast run.
+#
+# The notebook writes the data paths and may overwrite max_steps/val/ckpt from the
+# training-set size. Launch from the repo root:
+#   torchrun --nproc-per-node=1 training/finetune.py --config training/automodel_lora.yaml
+#
+# To point at a different base model, change model.pretrained_model_name_or_path
+# (the notebook sets this from the BASE_MODEL_ID variable).
+
+step_scheduler:
+  global_batch_size: 8      # effective batch; gradient-accumulates from local_batch_size
+  local_batch_size: 1       # 1 sample/step keeps peak memory low on a single GPU
+  # Small defaults for a fast demo run; the notebook overwrites these from the
+  # train-set size (≈ 1–2 epochs). See the notebook's "compute steps" cell.
+  ckpt_every_steps: 40
+  val_every_steps: 10
+  max_steps: 60
+
+dist_env:
+  backend: nccl
+  timeout_minutes: 30
+
+rng:
+  _target_: nemo_automodel.components.training.rng.StatefulRNG
+  seed: 42
+  ranked: true
+
+# SECURITY: trust_remote_code loads Python modules from the Hugging Face Hub for
+# this model. Required for the Nemotron Nano custom tokenizer / reasoning parser.
+# Use only the official NVIDIA org checkpoint.
+model:
+  _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_pretrained
+  pretrained_model_name_or_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+  trust_remote_code: true
+
+compile:
+  enabled: false
+  mode: "default"
+  fullgraph: false
+  dynamic: true
+  backend:
+
+peft:
+  _target_: nemo_automodel.components._peft.lora.PeftConfig
+  match_all_linear: true    # attach LoRA to every linear layer
+  dim: 16                   # LoRA rank — ~1% of params, fits one 80GB GPU
+  alpha: 32
+  use_triton: true
+
+distributed:
+  _target_: nemo_automodel.components.distributed.fsdp2.FSDP2Manager
+  dp_size: none
+  dp_replicate_size: 1
+  tp_size: 1
+  cp_size: 1
+  sequence_parallel: false
+
+loss_fn:
+  # Masks the prompt tokens — the model is trained only on the assistant turns.
+  _target_: nemo_automodel.components.loss.masked_ce.MaskedCrossEntropy
+
+dataset:
+  _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
+  path_or_dataset_id: "data/finetune/attacker_chat_train.jsonl"
+
+packed_sequence:
+  packed_sequence_size: 0
+
+dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+  shuffle: true
+
+validation_dataset:
+  _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
+  path_or_dataset_id: "data/finetune/attacker_chat_val.jsonl"
+
+validation_dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+
+optimizer:
+  _target_: torch.optim.AdamW
+  betas: [0.9, 0.999]
+  eps: 1e-8
+  lr: 2.0e-5
+  weight_decay: 0.01
+
+lr_scheduler:
+  lr_decay_style: cosine
+  min_lr: 1.0e-6
+
+checkpoint:
+  enabled: true
+  checkpoint_dir: runs/attacker_lora/checkpoints/
+  model_save_format: safetensors
+  save_consolidated: true

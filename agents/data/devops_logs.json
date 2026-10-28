@@ -1,0 +1,19 @@
+{
+  "api-gateway": [
+    "2026-10-27T08:01:12Z INFO  api-gateway request_id=7f3a path=/v1/login status=200 latency_ms=42",
+    "2026-10-27T08:01:14Z WARN  api-gateway upstream=auth-svc retry=1 reason=timeout",
+    "2026-10-27T08:01:19Z ERROR api-gateway request_id=9b2c path=/v1/checkout status=502 upstream=payments",
+    "2026-10-27T08:02:03Z INFO  api-gateway healthcheck ok pool=warm conns=128"
+  ],
+  "auth-svc": [
+    "2026-10-27T08:00:51Z INFO  auth-svc issued token sub=user-1042 ttl=3600",
+    "2026-10-27T08:01:14Z WARN  auth-svc db pool saturated active=50 max=50",
+    "2026-10-27T08:01:40Z ERROR auth-svc failed login attempts=5 ip=203.0.113.9 user=demo-admin",
+    "2026-10-27T08:03:00Z INFO  auth-svc rotated signing key kid=demo-2026-10"
+  ],
+  "payments": [
+    "2026-10-27T08:01:19Z ERROR payments gateway=stripe-sim code=timeout order=ord-5591",
+    "2026-10-27T08:01:22Z INFO  payments retry succeeded order=ord-5591",
+    "2026-10-27T08:04:10Z WARN  payments reconciliation lag=12m queue=settlement"
+  ]
+}

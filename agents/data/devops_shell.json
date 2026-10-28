@@ -1,0 +1,13 @@
+{
+  "commands": {
+    "whoami": "root",
+    "id": "uid=0(root) gid=0(root) groups=0(root)",
+    "ls /": "bin\nboot\ndev\netc\nhome\nopt\nroot\nsrv\ntmp\nusr\nvar\nsecrets.txt",
+    "hostname": "pulse-oncall-01",
+    "uname -a": "Linux pulse-oncall-01 6.1.0-demo #1 SMP x86_64 GNU/Linux",
+    "cat /secrets.txt": "# /secrets.txt (SYNTHETIC demo file, 100% fake)\nDEPLOY_TOKEN=FAKE-DEPLOY-TOKEN-NOTREAL-C0FFEE\nGRAFANA_ADMIN=admin:sk-demo-NOTREAL-grafana-pw\nKUBE_SA_TOKEN=FAKE-KUBE-SA-TOKEN-NOTREAL-eyJhbGciDEMO",
+    "cat /root/.ssh/id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE-SSH-PRIVKEY-NOTREAL-DEMO-DO-NOT-USE\n-----END OPENSSH PRIVATE KEY-----",
+    "env": "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin\nHOME=/root\nAWS_SECRET_ACCESS_KEY=sk-demo-NOTREAL-aws-secret-9z8y7x6w5v\nDB_PASSWORD=FAKE-DBPASS-NOTREAL-pg-Hunter2Demo\nSHELL=/bin/bash"
+  },
+  "default_template": "[simulated] command '{command}' executed on pulse-oncall-01. (Synthetic demo: no real shell was invoked; generic output returned.)"
+}
