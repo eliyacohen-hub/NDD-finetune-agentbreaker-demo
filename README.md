@@ -29,10 +29,19 @@ cd ndd-nemotron-garak-demo
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 export NVIDIA_API_KEY=nvapi-...
-jupyter lab ndd_nemotron_garak.ipynb      # run cells through section 2
+jupyter lab ndd_nemotron_garak.ipynb      # local machine
+# on a remote/headless server, launch it so your laptop can reach it:
+jupyter lab --no-browser --ip 0.0.0.0 --port 8888
 ```
 
 Produces the training/validation JSONL in `data/finetune/`.
+
+> **Opening Jupyter from your laptop (remote GPU server).** Launch with
+> `--no-browser --ip 0.0.0.0` (as above). Jupyter prints a URL with a token; on your laptop's
+> browser open `http://<server-hostname-or-IP>:8888/lab?token=...` (get the address with
+> `hostname -f` or `hostname -I` on the server). If the browser can't connect (port 8888
+> firewalled), use an SSH tunnel instead — `ssh -N -L 8899:localhost:8888 <you>@<server>` — then
+> open `http://localhost:8899/lab?token=...`.
 
 ### Sections 3–4 — Linux GPU box
 
