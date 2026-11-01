@@ -68,24 +68,6 @@ def load_hitlog(report_path: str | Path) -> list[dict]:
     return entries
 
 
-def _hit_tool(entry: dict) -> str:
-    """Best-effort target-tool label for a hitlog entry (for per-tool breakdown)."""
-    for key in ("goal", "probe"):
-        val = entry.get(key)
-        if isinstance(val, str) and val:
-            return val
-    return "unknown"
-
-
-def per_tool_breakdown(report_path: str | Path) -> dict[str, int]:
-    """Count landed attacks grouped by their goal/tool label."""
-    counts: dict[str, int] = {}
-    for entry in load_hitlog(report_path):
-        tool = _hit_tool(entry)
-        counts[tool] = counts.get(tool, 0) + 1
-    return counts
-
-
 def compare_runs(runs: dict[str, str | Path]) -> list[dict]:
     """Summarize several runs.
 

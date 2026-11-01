@@ -101,28 +101,7 @@ def main() -> int:
         action="store_true",
         help="Execute setup and profile generation only.",
     )
-    parser.add_argument(
-        "--resume-stage4",
-        metavar="RUN_ID",
-        help="Reuse a completed Stage 4 run and continue from verdict summaries.",
-    )
-    parser.add_argument(
-        "--resume-stage3",
-        metavar="RUN_ID",
-        help="Reuse validated profiles/analyses/branches and continue NDD attack generation.",
-    )
-    parser.add_argument(
-        "--resume-stage7",
-        metavar="RUN_ID",
-        help="Reuse a trained/merged run and execute only evaluation and comparison.",
-    )
     args = parser.parse_args()
-    if sum(bool(value) for value in (args.resume_stage3, args.resume_stage4, args.resume_stage7)) > 1:
-        parser.error("Choose only one resume mode.")
-    if args.stop_after_stage1 and (
-        args.resume_stage3 or args.resume_stage4 or args.resume_stage7
-    ):
-        parser.error("--stop-after-stage1 cannot be combined with a resume mode.")
 
     notebook_path = Path(args.notebook).resolve()
     repo = notebook_path.parent
@@ -157,18 +136,10 @@ def main() -> int:
         for cell_id in profile_cell_ids
         if cell_id in cell_index_by_id
     }
-    stage3_index = cell_index_by_id["af0dcce0"]
-    stage4_summary_index = cell_index_by_id["f6575710"]
-    stage7_index = cell_index_by_id["d6b0f4d6"]
-    if not args.resume_stage3 and not args.resume_stage4 and not args.resume_stage7:
-        for cell in notebook.cells:
-            if cell.cell_type == "code":
-                cell.outputs = []
-                cell.execution_count = None
-    else:
-        connectivity_index = cell_index_by_id["fc351f47"]
-        notebook.cells[connectivity_index].outputs = []
-        notebook.cells[connectivity_index].execution_count = None
+    for cell in notebook.cells:
+        if cell.cell_type == "code":
+            cell.outputs = []
+            cell.execution_count = None
     nbformat.write(notebook, notebook_path)
 
     manager = KernelManager(kernel_name="python3")
@@ -177,9 +148,6 @@ def main() -> int:
         f"{Path(sys.executable).parent}:{kernel_env.get('PATH', '')}"
     )
     kernel_env["IPYTHONDIR"] = str(repo / ".ipython")
-    resume_run_id = args.resume_stage3 or args.resume_stage4 or args.resume_stage7
-    if resume_run_id:
-        kernel_env["NDD_RUN_ID"] = resume_run_id
     manager.start_kernel(cwd=str(repo), env=kernel_env)
     client = manager.blocking_client()
     client.start_channels()
@@ -195,207 +163,16 @@ def main() -> int:
             if cell.cell_type == "code"
             and (index in setup_indices or index in profile_indices)
         ]
-    elif args.resume_stage7:
-        execution_indices = [
-            index
-            for index, cell in enumerate(notebook.cells)
-            if cell.cell_type == "code"
-            and (index in setup_indices or index >= stage7_index)
-        ]
-    elif args.resume_stage4:
-        execution_indices = [
-            index
-            for index, cell in enumerate(notebook.cells)
-            if cell.cell_type == "code"
-            and (
-                index in setup_indices
-                or index >= stage4_summary_index
-            )
-        ]
-    elif args.resume_stage3:
-        execution_indices = [
-            index
-            for index, cell in enumerate(notebook.cells)
-            if cell.cell_type == "code"
-            and (index in setup_indices or index >= stage3_index)
-        ]
     else:
         execution_indices = [
             index
             for index, cell in enumerate(notebook.cells)
             if cell.cell_type == "code"
         ]
-    recovered_stage4 = False
-    prepared_stage3 = False
-    prepared_stage7 = False
 
     try:
         for index in execution_indices:
             cell = notebook.cells[index]
-            if (
-                args.resume_stage3
-                and not prepared_stage3
-                and index >= stage3_index
-            ):
-                stage3_outputs, _, stage3_failed = execute(
-                    client,
-                    (
-                        "stage_b_df = _notebook_utils.normalize_analysis_column(\n"
-                        "    pd.DataFrame(json.loads(\n"
-                        "        (RUN_DIR / 'stages' / '02-tool-analysis' / "
-                        "'dataframe.json').read_text(encoding='utf-8')\n"
-                        "    ))\n"
-                        ")\n"
-                        "print(f'Reusing validated Stage 2: {len(stage_b_df)} agents.')"
-                    ),
-                    store_history=False,
-                    echo_streams=True,
-                )
-                if stage3_failed:
-                    error = next(
-                        (
-                            output
-                            for output in reversed(stage3_outputs)
-                            if output.output_type == "error"
-                        ),
-                        None,
-                    )
-                    detail = (
-                        f"{error.ename}: {error.evalue}"
-                        if error
-                        else "unknown Stage 3 preparation error"
-                    )
-                    print(f"STAGE3_PREPARATION_ERROR {detail}", flush=True)
-                    return 1
-                prepared_stage3 = True
-                print("STAGE3_PREPARATION_READY", flush=True)
-
-            if (
-                args.resume_stage7
-                and not prepared_stage7
-                and index >= stage7_index
-            ):
-                preparation_outputs, _, preparation_failed = execute(
-                    client,
-                    (
-                        "import matplotlib.pyplot as plt\n"
-                        "MERGED = RUN_DIR / 'training' / 'merged_model'\n"
-                        "if not (MERGED / 'config.json').is_file():\n"
-                        "    raise RuntimeError(f'Merged model is missing at {MERGED}')\n"
-                        "print(f'Reusing merged model: {MERGED}')"
-                    ),
-                    store_history=False,
-                    echo_streams=True,
-                )
-                if preparation_failed:
-                    error = next(
-                        (
-                            output
-                            for output in reversed(preparation_outputs)
-                            if output.output_type == "error"
-                        ),
-                        None,
-                    )
-                    detail = (
-                        f"{error.ename}: {error.evalue}"
-                        if error
-                        else "unknown Stage 7 preparation error"
-                    )
-                    print(f"STAGE7_PREPARATION_ERROR {detail}", flush=True)
-                    return 1
-                prepared_stage7 = True
-                print("STAGE7_PREPARATION_READY", flush=True)
-
-            if (
-                args.resume_stage4
-                and not recovered_stage4
-                and index >= stage4_summary_index
-            ):
-                recovery_code = """
-stage_root = RUN_DIR / "stages"
-branch_records = json.loads(
-    (stage_root / "03-attack-branches" / "dataframe.json").read_text(
-        encoding="utf-8"
-    )
-)
-attack_records = json.loads(
-    (stage_root / "04-attack-results" / "dataframe.json").read_text(
-        encoding="utf-8"
-    )
-)
-if len(branch_records) != len(attack_records):
-    raise RuntimeError("Stage 3/4 row counts do not match for recovery.")
-seed_columns = (
-    "profile",
-    "tools",
-    "full_profile",
-    "analysis",
-    "target_analysis",
-    "security_instruction",
-)
-for branch, attack in zip(branch_records, attack_records):
-    if (
-        branch["profile_slot"] != attack["profile_slot"]
-        or branch["domain"] != attack["domain"]
-        or branch["analysis_attack_prompt"] != attack["analysis_attack_prompt"]
-    ):
-        raise RuntimeError("Stage 3/4 row ordering changed; cannot recover safely.")
-    for column in seed_columns:
-        attack[column] = branch[column]
-df = pd.DataFrame(attack_records)
-df = _notebook_utils.normalize_nested_columns(
-    _notebook_utils.normalize_analysis_column(
-        _notebook_utils.expose_profile_columns(df)
-    ),
-    ["target_analysis", "attack_2", "verdict_1", "verdict_2"],
-)
-expected_rows = int(
-    df.drop_duplicates(subset=["profile_slot"])["num_tools"].sum()
-) * 5
-if len(df) != expected_rows or expected_rows <= 0:
-    raise RuntimeError(
-        f"Recovered Stage 4 has {len(df)} rows, expected {expected_rows}."
-    )
-ARTIFACTS.save_stage(
-    "04_attack_results",
-    df,
-    description=f"Normalized combined {len(df)}-row attack result dataset.",
-    llm_columns=[
-        "victim_response_1",
-        "verdict_1",
-        "attack_2",
-        "victim_response_2",
-        "verdict_2",
-    ],
-    ndd_config={"recovered_from_stage3": True, "rows": len(df)},
-)
-print(f"Recovered and normalized Stage 4: {len(df)} rows.")
-"""
-                recovery_outputs, _, recovery_failed = execute(
-                    client,
-                    recovery_code,
-                    store_history=False,
-                    echo_streams=True,
-                )
-                if recovery_failed:
-                    error = next(
-                        (
-                            output
-                            for output in reversed(recovery_outputs)
-                            if output.output_type == "error"
-                        ),
-                        None,
-                    )
-                    detail = (
-                        f"{error.ename}: {error.evalue}"
-                        if error
-                        else "unknown Stage 4 recovery error"
-                    )
-                    print(f"STAGE4_RECOVERY_ERROR {detail}", flush=True)
-                    return 1
-                recovered_stage4 = True
-                print("STAGE4_RECOVERY_READY", flush=True)
-
             started = time.monotonic()
             print(f"CELL_START index={index} id={cell.get('id', '')}", flush=True)
             outputs, count, failed = execute(
