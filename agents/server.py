@@ -27,11 +27,11 @@ import uuid
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
+from fastapi import FastAPI
+from pydantic import BaseModel, ConfigDict, Field
 
-from agents.devops_agent import build_agent as build_devops  # noqa: E402
-from agents.research_agent import build_agent as build_research  # noqa: E402
+from agents.devops_agent import build_agent as build_devops
+from agents.research_agent import build_agent as build_research
 
 _BUILDERS = {
     "research": ("Atlas", build_research),
@@ -73,13 +73,11 @@ class ChatMessage(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     model: str | None = None
     messages: list[ChatMessage] = Field(default_factory=list)
     stream: bool | None = False
-    # Any other OpenAI fields are accepted and ignored.
-
-    class Config:
-        extra = "allow"
 
 
 def _latest_user_text(messages: list[ChatMessage]) -> str:
@@ -113,7 +111,7 @@ def chat_completions(req: ChatCompletionRequest) -> dict:
     user_text = _latest_user_text(req.messages)
     try:
         answer = _run_agent(user_text)
-    except Exception as exc:  # surface model/backend errors as assistant content
+    except Exception as exc:  # noqa: BLE001 - preserve API compatibility
         answer = f"[agent-error] {type(exc).__name__}: {exc}"
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",

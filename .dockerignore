@@ -1,0 +1,5 @@
+**
+!docker/
+!docker/garak/
+!docker/garak/Dockerfile
+!docker/garak/patch_reasoning_content.py

@@ -4,8 +4,9 @@
 # notebook (analysis + exploit records in Garak AgentBreaker format), using PEFT
 # (LoRA). Tuned for a SINGLE 80GB GPU and a SMALL, fast run.
 #
-# The notebook writes the data paths and may overwrite max_steps/val/ckpt from the
-# training-set size. Launch from the repo root:
+# The checked-in paths use the bundled workshop sample. The notebook replaces
+# them with run-specific paths and may overwrite max_steps/val/ckpt from the
+# generated training-set size. Launch from the repo root:
 #   torchrun --nproc-per-node=1 training/finetune.py --config training/automodel_lora.yaml
 #
 # To point at a different base model, change model.pretrained_model_name_or_path
@@ -34,7 +35,7 @@ rng:
 # Use only the official NVIDIA org checkpoint.
 model:
   _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_pretrained
-  pretrained_model_name_or_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+  pretrained_model_name_or_path: nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16
   trust_remote_code: true
 
 compile:
@@ -65,7 +66,7 @@ loss_fn:
 
 dataset:
   _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
-  path_or_dataset_id: "data/finetune/attacker_chat_train.jsonl"
+  path_or_dataset_id: "data/quick_finetune/agent_breaker_train.jsonl"
 
 packed_sequence:
   packed_sequence_size: 0
@@ -77,7 +78,7 @@ dataloader:
 
 validation_dataset:
   _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
-  path_or_dataset_id: "data/finetune/attacker_chat_val.jsonl"
+  path_or_dataset_id: "data/quick_finetune/agent_breaker_validation.jsonl"
 
 validation_dataloader:
   _target_: torchdata.stateful_dataloader.StatefulDataLoader

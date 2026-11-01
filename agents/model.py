@@ -3,7 +3,7 @@
 The model is configured entirely from environment variables so the same code
 targets any OpenAI-compatible NIM endpoint:
 
-- ``GEN_MODEL``      model name (default ``nvidia/llama-3.3-nemotron-super-49b-v1``)
+- ``GEN_MODEL``      model name (default ``nvidia/nemotron-3.5-super-vl-120b-a12b``)
 - ``NVIDIA_API_KEY`` API key for https://integrate.api.nvidia.com/v1
 - ``GEN_BASE_URL``   optional base_url override (default the build.nvidia.com URL)
 """
@@ -14,7 +14,7 @@ import os
 
 from langchain_openai import ChatOpenAI
 
-DEFAULT_MODEL = "nvidia/llama-3.3-nemotron-super-49b-v1"
+DEFAULT_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 

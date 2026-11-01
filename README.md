@@ -10,80 +10,133 @@ One notebook (`ndd_nemotron_garak.ipynb`) that runs the full model-customization
 > Authorized, defensive security demo (like NVIDIA Agent Breaker / Garak). The bundled agents are
 > intentionally vulnerable practice targets with obviously-fake planted data.
 
-## What you need
+## Clean-server prerequisites
 
-| | Sections 0–2 (data generation) | Sections 3–4 (fine-tune + evaluate) |
-|---|---|---|
-| **Machine** | any (Mac/Linux/Windows), CPU only | **Linux + one ~80 GB NVIDIA GPU** (H100/A100 80GB) |
-| **Also** | — | Docker + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html), and an [NGC](https://ngc.nvidia.com) API key |
+The full workshop path needs:
 
-- **`NVIDIA_API_KEY`** from [build.nvidia.com](https://build.nvidia.com) — required for every section (data generation + the eval judge).
-- macOS has no NVIDIA GPU, so `docker run --gpus` won't work there — run sections 3–4 on a Linux GPU box.
+- Linux with one NVIDIA H100/A100 80 GB GPU and a working NVIDIA driver.
+- Docker Engine plus the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- Python 3.11 or newer.
+- Network access to PyPI, GitHub, Hugging Face, `nvcr.io`, and build.nvidia.com.
+- An [NGC API key](https://ngc.nvidia.com) for pulling the training image.
+- `NVIDIA_API_KEY` from [build.nvidia.com](https://build.nvidia.com) for data generation, victim agents, and evaluation.
 
-## How to run
+GPU drivers, Docker, and the NVIDIA Container Toolkit are host administration
+prerequisites; the project setup deliberately does not modify those system components.
 
-### Sections 0–2 — any machine
+## One-command setup
+
+Log in to NGC once, then run setup from the repository root:
 
 ```bash
-cd ndd-nemotron-garak-demo
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-export NVIDIA_API_KEY=nvapi-...
-jupyter lab ndd_nemotron_garak.ipynb      # local machine
-# on a remote/headless server, launch it so your laptop can reach it:
+docker login nvcr.io -u '$oauthtoken'   # use the NGC API key as password
+./setup.sh
+```
+
+`setup.sh`:
+
+1. Creates `.venv` and installs exact tested host dependencies.
+2. Pulls the pinned NeMo AutoModel and vLLM images.
+3. Builds Garak at the same pinned revision used by the training prompts.
+4. Verifies Python imports, notebook schema, bundled data, container images, and GPU access.
+
+It does not require `NVIDIA_API_KEY` and does not make paid inference calls.
+To reproduce a clean machine locally:
+
+```bash
+./scripts/clean.sh --images
+./setup.sh
+```
+
+## Run the notebook
+
+```bash
+cp .env.example .env
+# Edit .env and replace NVIDIA_API_KEY, or export it in the shell.
+source .venv/bin/activate
+jupyter lab ndd_nemotron_garak.ipynb
+```
+
+On a remote GPU server, launch Jupyter with:
+
+```bash
 jupyter lab --no-browser --ip 0.0.0.0 --port 8888
 ```
 
-Produces the training/validation JSONL in `data/finetune/`.
+Open the printed token URL from your laptop at
+`http://<server-hostname-or-IP>:8888/lab?token=...`. If port 8888 is blocked,
+create a tunnel with `ssh -N -L 8899:localhost:8888 <you>@<server>`, then open
+`http://localhost:8899/lab?token=...`.
 
-> **Opening Jupyter from your laptop (remote GPU server).** Launch with
-> `--no-browser --ip 0.0.0.0` (as above). Jupyter prints a URL with a token; on your laptop's
-> browser open `http://<server-hostname-or-IP>:8888/lab?token=...` (get the address with
-> `hostname -f` or `hostname -I` on the server). If the browser can't connect (port 8888
-> firewalled), use an SSH tunnel instead — `ssh -N -L 8899:localhost:8888 <you>@<server>` — then
-> open `http://localhost:8899/lab?token=...`.
+Run cells top to bottom. CPU-side generation runs in `.venv`; training and merging
+automatically use the pinned AutoModel container when the host lacks that GPU stack.
+The evaluation section prints two pinned Docker commands for the base and fine-tuned
+vLLM servers.
 
-### Sections 3–4 — Linux GPU box
+Each run is self-contained under
+`output/artifacts/<UTC timestamp>_agents-<N>_tools-<min>-<max>_<model>/`.
 
-**1. Log in to NGC** so Docker can pull the image (API key: [ngc.nvidia.com](https://ngc.nvidia.com) → **Setup → Generate API Key**):
-
-```bash
-docker login nvcr.io -u '$oauthtoken'     # password = your NGC API key
-```
-
-> A **TLS handshake timeout** here means the machine can't reach `nvcr.io` — check VPN/proxy
-> (`curl -I https://nvcr.io/v2/` should return quickly).
-
-**2. Start JupyterLab in the NeMo AutoModel container** (it ships the GPU training stack):
+For an unattended top-to-bottom run, including local evaluation servers, use:
 
 ```bash
-export NVIDIA_API_KEY=nvapi-...
-docker run --gpus 1 --rm -it -p 8888:8888 \
-    -e NVIDIA_API_KEY \
-    -v "$PWD":/workspace -w /workspace \
-    nvcr.io/nvidia/nemo-automodel:25.11.00 \
-    bash -lc "pip install -r requirements.txt vllm && jupyter lab --ip 0.0.0.0 --allow-root --no-browser"
+export NDD_RUN_ID=my-audience-run
+.venv/bin/python -u scripts/run_notebook.py --start-eval-servers
+.venv/bin/python scripts/validate_run.py --run-id "$NDD_RUN_ID"
 ```
 
-Open the printed `http://127.0.0.1:8888/...?token=...` URL and run the notebook top to bottom.
+The validator checks every persisted DataFrame, tool and prompt coverage, all generated
+attack branches, JSONL inputs, single-GPU training, loss, merged weights, all four
+comparison reports, notebook outputs, and run isolation. It saves the result as
+`output/artifacts/<run-id>/validation_report.json`.
+
+### Workshop shortcut
+
+To skip paid data generation, use the checked-in sample:
+
+- `data/quick_finetune/agent_breaker_train.jsonl` — 512 records.
+- `data/quick_finetune/agent_breaker_validation.jsonl` — 64 records.
+
+The checked-in `training/automodel_lora.yaml` points to these files and writes to
+`runs/attacker_lora/checkpoints/`. See `data/quick_finetune/README.md` for provenance.
+The sample is for demonstration, not a production benchmark.
 
 ## Configuration (top of the notebook)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `GEN_MODEL` | `nvidia/llama-3.3-nemotron-super-49b-v1` | the one build.nvidia.com model that generates data, role-plays victims, and judges |
-| `BASE_MODEL_ID` | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` | the student model we fine-tune |
-| `N_AGENTS` | 15 | synthetic agents to generate |
-| `TOOLS_MIN` / `TOOLS_MAX` | 3 / 5 | tools per agent |
+| `GEN_MODEL` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | the one build.nvidia.com model that generates data, role-plays victims, and judges |
+| `BASE_MODEL_ID` | `nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16` | the student model we fine-tune |
+| `N_AGENTS` | 5 | unique profile slots generated by the workshop run |
+| `TOOLS_MIN` / `TOOLS_MAX` | 2 / 4 | tools attacked per generated agent |
 | `COMPARE_MODEL` | `None` | optional third red-team model for the comparison |
+
+NDD independently and uniformly samples the domain, 2–4 tool count, and security
+level for every profile slot. Sampling is with replacement. The LLM then generates
+the operational profile, generates tools from that profile, and finally generates a
+security instruction from the sampled level plus the completed profile and tools.
+Permissive profiles receive no security instruction. Every tool analysis must contain
+exactly five unique prompts, so the branch count is `sum(num_tools) × 5`. NDD
+checkpoints generation in 25-row groups and resumes compatible interrupted runs.
+
+The generated roles use the original enterprise profile set: healthcare scheduling,
+legal intake, IT helpdesk, logistics tracking, retail order management, banking support,
+insurance claims, travel booking, CRM sales, and facilities management. Research
+knowledge assistants and on-call DevOps agents remain held out for evaluation.
+
+Set `NDD_RUN_ID` before launching Jupyter if you want a stable run-directory
+name instead of the generated timestamp/parameter name.
 
 ## What's in the folder
 
 ```
+setup.sh                    clean-server installer and verifier
 ndd_nemotron_garak.ipynb   the walkthrough
 training/                  automodel_lora.yaml, finetune.py, merge_lora.py, chat template
 agents/                    two LangGraph victim agents (Atlas/research, Pulse/devops) + mock data + server
-garak_eval/                run_scan.py (drive Garak), compare.py (ASR table + chart)
+garak_eval/                pinned agent configs, scan driver, ASR comparison
+docker/garak/              reproducible pinned Garak image
+scripts/                   cleanup, shared image pins, setup verification
+output/artifacts/          self-contained run directories (created by the notebook)
 ```
 
 The evaluation plugs the base and fine-tuned models into Garak's probe as the **red-team model**,

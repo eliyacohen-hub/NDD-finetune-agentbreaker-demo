@@ -4,12 +4,18 @@ venv/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.ipython/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
 
 # Generated at runtime
-data/finetune/
+artifacts/
+output/artifacts/
 runs/
 training/*.run.yaml
 training/train.log
+training/merge.log
 agents/data/outbox.json
 garak_eval/scan_*.yaml
 

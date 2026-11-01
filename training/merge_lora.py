@@ -7,7 +7,7 @@ copies the base model's auxiliary hub files (custom tokenizer / modeling / chat
 template) into the merged output so it loads standalone.
 
     python training/merge_lora.py \
-        --base-model nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
+        --base-model nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 \
         --adapter runs/attacker_lora/checkpoints \
         --output  runs/attacker_merged \
         --trust-remote-code --dtype bfloat16
@@ -83,6 +83,18 @@ def main() -> None:
     model = PeftModel.from_pretrained(base, str(args.adapter))
     print("Merging ...")
     model = model.merge_and_unload()
+
+    generation_config = getattr(model, "generation_config", None)
+    if (
+        generation_config is not None
+        and not generation_config.do_sample
+        and generation_config.top_p != 1.0
+    ):
+        print(
+            "Resetting inactive top_p to 1.0 so the greedy generation config "
+            "passes Transformers validation."
+        )
+        generation_config.top_p = 1.0
 
     print(f"Saving merged model -> {args.output}")
     model.save_pretrained(str(args.output), safe_serialization=True)

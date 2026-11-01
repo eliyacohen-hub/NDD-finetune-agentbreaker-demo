@@ -31,7 +31,7 @@ def main(default_config_path: str | Path | None = None) -> None:
         recipe.run_train_validation_loop()
     except FileNotFoundError as e:
         raise RuntimeError(f"Configuration file not found: {path}") from e
-    except Exception as e:  # noqa: BLE001 - surface the real training error
+    except Exception as e:
         raise RuntimeError(f"Fine-tuning failed: {e}") from e
 
 

@@ -1,4 +1,4 @@
-{# Same as Hugging Face nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 chat_template.jinja,
+{# No-think serving template for nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16,
    but defaults enable_thinking to False so vLLM generation starts after an empty
    <think></think> block (matches training without long reasoning prefixes). #}
 {% macro render_extra_keys(json_dict, handled_keys) %}

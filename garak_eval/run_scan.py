@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import copy
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,9 +48,13 @@ def build_scan_config(
     detector_uri: str = NVIDIA_BUILD_URI,
     detector_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1",
     agent_uri: str = "http://localhost:8000/v1/chat/completions",
+    agent_config_file: str = "agent_breaker/agent.yaml",
     generations: int = 1,
-    red_team_max_tokens: int = 4096,
-    detector_max_tokens: int = 1024,
+    red_team_max_tokens: int = 7000,
+    detector_max_tokens: int = 4096,
+    parse_model_max_tokens: int = 8192,
+    max_calls_per_conversation: int = 4,
+    max_attempts_per_tool: int = 1,
 ) -> dict:
     """Return a Garak run-config dict wiring red-team + detector + target agent.
 
@@ -60,13 +65,21 @@ def build_scan_config(
     model_block = {
         "uri": red_team_uri,
         "max_tokens": red_team_max_tokens,
+        "temperature": 0.0,
+        "vary_seed_each_call": False,
+        "vary_temp_each_call": False,
+        "extra_params": {"response_format": {"type": "json_object"}},
         "suppressed_params": copy.copy(_SUPPRESSED),
     }
     detector_block = {
         "uri": detector_uri,
         "max_tokens": detector_max_tokens,
+        "temperature": 0.0,
+        "vary_seed_each_call": False,
+        "vary_temp_each_call": False,
         "suppressed_params": copy.copy(_SUPPRESSED),
     }
+    parse_block = detector_block | {"max_tokens": parse_model_max_tokens}
     return {
         "run": {"generations": generations},
         "plugins": {
@@ -78,6 +91,7 @@ def build_scan_config(
                 "rest": {
                     "RestGenerator": {
                         "uri": agent_uri,
+                        "headers": {"Content-Type": "application/json"},
                         "req_template_json_object": {
                             "model": "garak",
                             "messages": [{"role": "user", "content": "$INPUT"}],
@@ -92,10 +106,15 @@ def build_scan_config(
             "probes": {
                 "agent_breaker": {
                     "AgentBreaker": {
-                        "agent_config_file": "agent_breaker/agent.yaml",
+                        "agent_config_file": agent_config_file,
                         "red_team_model_type": "nim.NVOpenAIChat",
                         "red_team_model_name": red_team_model,
                         "red_team_model_config": model_block,
+                        "parse_model_type": "nim.NVOpenAIChat",
+                        "parse_model_name": detector_model,
+                        "parse_model_config": parse_block,
+                        "max_calls_per_conv": max_calls_per_conversation,
+                        "max_attempts_per_tool": max_attempts_per_tool,
                     }
                 }
             },
@@ -142,20 +161,67 @@ def run_garak(
     if extra_env:
         env.update(extra_env)
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "garak",
-        "--config",
-        str(Path(config_path).resolve()),
-        "--report_prefix",
-        report_prefix,
-    ]
-    print(f"[run_scan] launching: {' '.join(cmd)} (cwd={garak_dir})", flush=True)
-    subprocess.run(cmd, cwd=str(garak_dir), env=env, check=True)
+    runtime_home = Path(env.get("GARAK_RUNTIME_HOME", Path.home()))
+    runtime_home.mkdir(parents=True, exist_ok=True)
+    env["HOME"] = str(runtime_home)
+    env["XDG_CACHE_HOME"] = str(runtime_home / ".cache")
+    env["XDG_CONFIG_HOME"] = str(runtime_home / ".config")
+    env["XDG_DATA_HOME"] = str(runtime_home / ".local" / "share")
+    env["TMPDIR"] = str(runtime_home / "tmp")
+    Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
+
+    resolved_config_path = Path(config_path).resolve()
+    docker_image = env.get("GARAK_DOCKER_IMAGE")
+    if docker_image:
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "host",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "-e",
+            f"HOME={runtime_home}",
+            "-e",
+            f"XDG_CACHE_HOME={env['XDG_CACHE_HOME']}",
+            "-e",
+            f"XDG_CONFIG_HOME={env['XDG_CONFIG_HOME']}",
+            "-e",
+            f"XDG_DATA_HOME={env['XDG_DATA_HOME']}",
+            "-e",
+            f"TMPDIR={env['TMPDIR']}",
+            "-e",
+            "NIM_API_KEY",
+            "-v",
+            f"{runtime_home}:{runtime_home}",
+            "-v",
+            f"{resolved_config_path.parent}:{resolved_config_path.parent}:ro",
+            docker_image,
+            "--config",
+            str(resolved_config_path),
+            "--report_prefix",
+            report_prefix,
+        ]
+        cwd = None
+    else:
+        garak_python = env.get("GARAK_PYTHON", sys.executable)
+        cmd = [
+            garak_python,
+            "-m",
+            "garak",
+            "--config",
+            str(resolved_config_path),
+            "--report_prefix",
+            report_prefix,
+        ]
+        cwd = str(garak_dir)
+
+    print(f"[run_scan] launching: {' '.join(cmd)}", flush=True)
+    subprocess.run(cmd, cwd=cwd, env=env, check=True)
 
     # Default report location: ~/.local/share/garak/garak_runs/<prefix>.report.jsonl
-    runs_dir = Path.home() / ".local" / "share" / "garak" / "garak_runs"
+    runs_dir = runtime_home / ".local" / "share" / "garak" / "garak_runs"
     report = runs_dir / f"{report_prefix}.report.jsonl"
     if not report.exists():
         # Fall back to a search in case the data dir is customized.
@@ -176,13 +242,26 @@ def scan(
     detector_uri: str = NVIDIA_BUILD_URI,
     nim_api_key: str | None = None,
     config_out: str | Path | None = None,
+    agent_config_file: str = "agent_breaker/agent.yaml",
 ) -> Path:
     """Convenience: build config, render it, run garak, return the report path."""
+    agent_config_path = Path(agent_config_file)
+    if agent_config_path.is_file():
+        runtime_home = Path(os.environ.get("GARAK_RUNTIME_HOME", Path.home()))
+        runtime_config_dir = (
+            runtime_home / ".local" / "share" / "garak" / "data" / "agent_breaker"
+        )
+        runtime_config_dir.mkdir(parents=True, exist_ok=True)
+        staged_config = runtime_config_dir / agent_config_path.name
+        shutil.copy2(agent_config_path, staged_config)
+        agent_config_file = f"agent_breaker/{staged_config.name}"
+
     cfg = build_scan_config(
         red_team_uri=red_team_uri,
         red_team_model=red_team_model,
         detector_uri=detector_uri,
         detector_model=detector_model,
+        agent_config_file=agent_config_file,
     )
     config_out = config_out or (Path("garak_eval") / f"scan_{report_prefix}.yaml")
     render_config(cfg, config_out)
