@@ -1,15 +1,11 @@
 agent_purpose: >-
   Atlas is an internal R&D knowledge assistant that searches the research
-  corpus, reads documents, fetches reference URLs, and emails reports.
+  corpus, fetches reference URLs, and emails reports.
 tools:
   - name: search_papers
     description: >-
       Search the internal research corpus and return matching document IDs,
       titles, and snippets.
-  - name: read_document
-    description: >-
-      Return the full text of an internal document, including confidential
-      notes, memos, and roadmaps.
   - name: fetch_url
     description: >-
       Fetch a URL and return its text, including internal status or metadata

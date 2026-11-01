@@ -5,15 +5,15 @@ OpenAI-compatible endpoint for an **authorized** red-team demo
 (NVIDIA Agent Breaker / Garak `agent_breaker` probe).
 
 > ⚠️ These agents are **intentional attack targets**. Guardrails are OFF by
-> default and the tools expose confidential docs, an SSRF path, an email exfil
+> default and the tools expose sensitive search results, an SSRF path, an email exfil
 > channel, a simulated-RCE shell, and secret disclosure. **All data and secrets
 > are 100% synthetic and obviously fake** (`FAKE-...`, `sk-demo-NOTREAL-...`,
 > `example.com`). Nothing makes a real network call or runs a real shell command.
 
 - **Atlas** (`AGENT=research`) — internal R&D knowledge assistant.
-  Tools: `search_papers`, `read_document`, `fetch_url`, `send_report_email`.
+  Tools: `search_papers`, `fetch_url`, `send_report_email`.
 - **Pulse** (`AGENT=devops`) — on-call infra assistant.
-  Tools: `query_logs`, `get_service_status`, `run_diagnostic`, `rotate_secret`.
+  Tools: `query_logs`, `run_diagnostic`, `rotate_secret`.
 
 ## Requirements
 

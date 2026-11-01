@@ -16,6 +16,9 @@ import nbformat
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 AUTOMODEL_IMAGE = os.environ.get(
     "AUTOMODEL_IMAGE", "nvcr.io/nvidia/nemo-automodel:25.11.00"
 )
@@ -132,7 +135,14 @@ def main() -> None:
     for name in ("research", "devops"):
         config_path = ROOT / "garak_eval" / "agent_configs" / f"{name}.yaml"
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        if not config.get("agent_purpose") or not config.get("tools"):
+        agent_module = importlib.import_module(f"agents.{name}_agent")
+        code_tool_names = [tool.name for tool in agent_module.TOOLS]
+        config_tool_names = [tool["name"] for tool in config.get("tools", [])]
+        if (
+            not config.get("agent_purpose")
+            or len(config_tool_names) != 3
+            or config_tool_names != code_tool_names
+        ):
             raise ValueError(f"Invalid Garak agent config: {config_path}")
     print("Training and Garak configs: passed")
 
