@@ -146,7 +146,17 @@ def main() -> int:
         for cell_id in setup_cell_ids
         if cell_id in cell_index_by_id
     }
-    profile_index = cell_index_by_id["ffb97b46"]
+    profile_cell_ids = {
+        "ffb97b46",
+        "38c65510",
+        "d6564f97",
+        "bcfbc2b5",
+    }
+    profile_indices = {
+        cell_index_by_id[cell_id]
+        for cell_id in profile_cell_ids
+        if cell_id in cell_index_by_id
+    }
     stage3_index = cell_index_by_id["af0dcce0"]
     stage4_summary_index = cell_index_by_id["f6575710"]
     stage7_index = cell_index_by_id["d6b0f4d6"]
@@ -183,7 +193,7 @@ def main() -> int:
             index
             for index, cell in enumerate(notebook.cells)
             if cell.cell_type == "code"
-            and (index in setup_indices or index == profile_index)
+            and (index in setup_indices or index in profile_indices)
         ]
     elif args.resume_stage7:
         execution_indices = [

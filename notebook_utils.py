@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -23,8 +23,6 @@ import httpx
 import pandas as pd
 import yaml
 from data_designer import config as dd
-from data_designer.interface import ResumeMode
-from data_designer.interface.errors import DataDesignerGenerationError
 from pydantic import BaseModel, Field
 
 
@@ -227,154 +225,6 @@ class ArtifactStore:
         write_yaml_json(self.run_dir / "manifest", self.manifest)
         print(f"Saved {stage_name}: {len(dataframe)} rows -> {stage_directory}")
         return stage_directory
-
-
-def create_resumable(
-    designer: Any,
-    builder: dd.DataDesignerConfigBuilder,
-    *,
-    num_records: int,
-    dataset_name: str,
-    max_health_attempts: int = 3,
-) -> Any:
-    """Use NDD-native checkpoint resume, retrying only startup health checks."""
-    for attempt in range(1, max_health_attempts + 1):
-        try:
-            return designer.create(
-                builder,
-                num_records=num_records,
-                dataset_name=dataset_name,
-                resume=ResumeMode.IF_POSSIBLE,
-            )
-        except DataDesignerGenerationError as error:
-            is_health_failure: bool = "health check" in str(error).lower()
-            if not is_health_failure or attempt == max_health_attempts:
-                raise
-            delay: float = 10.0 * attempt
-            print(
-                f"Health-check failure ({attempt}/{max_health_attempts}); "
-                f"retrying in {delay:.0f}s"
-            )
-            time.sleep(delay)
-    raise RuntimeError("Create retry loop exited unexpectedly.")
-
-
-def generate_exact_rows(
-    *,
-    designer: Any,
-    seed: pd.DataFrame,
-    builder_factory: Callable[
-        [pd.DataFrame], dd.DataDesignerConfigBuilder
-    ],
-    dataset_prefix: str,
-    key_columns: Sequence[str],
-    normalize: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
-    max_completion_attempts: int = 3,
-) -> tuple[pd.DataFrame, list[dict[str, Any]], dd.DataDesignerConfigBuilder]:
-    """Generate every seed key using NDD resume plus bounded dropped-row completion."""
-
-    def row_key(row: pd.Series) -> tuple[Any, ...]:
-        return tuple(row[column] for column in key_columns)
-
-    expected_keys: list[tuple[Any, ...]] = [
-        row_key(row) for _, row in seed.iterrows()
-    ]
-    if len(expected_keys) != len(set(expected_keys)):
-        raise ValueError(f"Seed keys are not unique: {list(key_columns)}")
-
-    frames: list[pd.DataFrame] = []
-    attempts: list[dict[str, Any]] = []
-    pending: pd.DataFrame = seed.copy(deep=True)
-    expected_columns: list[str] = []
-    last_builder: dd.DataDesignerConfigBuilder | None = None
-
-    for attempt_number in range(1, max_completion_attempts + 1):
-        requested_rows: int = len(pending)
-        last_builder = builder_factory(pending)
-        columns: list[str] = [
-            column.name for column in last_builder.get_column_configs()
-        ]
-        if not expected_columns:
-            expected_columns = columns
-        elif columns != expected_columns:
-            raise RuntimeError("NDD graph changed between completion attempts.")
-
-        result: Any = create_resumable(
-            designer,
-            last_builder,
-            num_records=len(pending),
-            dataset_name=f"{dataset_prefix}-attempt-{attempt_number:02d}",
-        )
-        attempt_frame: pd.DataFrame = result.load_dataset()
-        if normalize is not None:
-            attempt_frame = normalize(attempt_frame)
-        missing_key_columns: set[str] = set(key_columns) - set(
-            attempt_frame.columns
-        )
-        if missing_key_columns:
-            raise KeyError(
-                f"NDD result lacks key columns: {sorted(missing_key_columns)}"
-            )
-        if not attempt_frame.empty:
-            frames.append(attempt_frame)
-
-        combined: pd.DataFrame = (
-            pd.concat(frames, ignore_index=True).drop_duplicates(
-                subset=list(key_columns),
-                keep="last",
-            )
-            if frames
-            else pd.DataFrame()
-        )
-        completed_keys: set[tuple[Any, ...]] = (
-            {row_key(row) for _, row in combined.iterrows()}
-            if not combined.empty
-            else set()
-        )
-        pending_mask = pd.Series(
-            [
-                row_key(row) not in completed_keys
-                for _, row in seed.iterrows()
-            ],
-            index=seed.index,
-        )
-        pending = seed[pending_mask].copy(deep=True)
-        attempts.append(
-            {
-                "attempt": attempt_number,
-                "requested_rows": requested_rows,
-                "returned_rows": len(attempt_frame),
-                "remaining_rows": len(pending),
-            }
-        )
-        print(
-            f"Completion attempt {attempt_number}: "
-            f"{len(attempt_frame)} returned, {len(pending)} remaining."
-        )
-        if pending.empty:
-            break
-
-    if not frames or last_builder is None or not pending.empty:
-        raise RuntimeError(
-            f"NDD generation is missing {len(pending)} rows after "
-            f"{max_completion_attempts} completion attempts."
-        )
-    dataframe = pd.concat(frames, ignore_index=True).drop_duplicates(
-        subset=list(key_columns),
-        keep="last",
-    )
-    order: dict[tuple[Any, ...], int] = {
-        key: index for index, key in enumerate(expected_keys)
-    }
-    dataframe["_seed_order"] = [
-        order[row_key(row)] for _, row in dataframe.iterrows()
-    ]
-    dataframe = (
-        dataframe.sort_values("_seed_order")
-        .drop(columns=["_seed_order"])
-        .reset_index(drop=True)
-    )
-    return dataframe, attempts, last_builder
 
 
 def profile_mapping(value: object, column: str) -> dict[str, Any]:
@@ -607,30 +457,6 @@ def validate_profile_dataframe(
     return dataframe, sampled_counts
 
 
-def generate_analyses(
-    *,
-    designer: Any,
-    analysis_seed: pd.DataFrame,
-    builder_factory: Callable[
-        [pd.DataFrame], dd.DataDesignerConfigBuilder
-    ],
-    run_id: str,
-    max_completion_attempts: int = 3,
-) -> tuple[pd.DataFrame, list[dict[str, Any]], dd.DataDesignerConfigBuilder]:
-    """Generate analyses using NDD resume, retrying only ultimately dropped rows."""
-    return generate_exact_rows(
-        designer=designer,
-        seed=analysis_seed,
-        builder_factory=builder_factory,
-        dataset_prefix=f"tool-analysis-{run_id}",
-        key_columns=["profile_slot"],
-        normalize=lambda frame: normalize_analysis_column(
-            expose_profile_columns(frame)
-        ),
-        max_completion_attempts=max_completion_attempts,
-    )
-
-
 def validate_analysis_dataframe(
     dataframe: pd.DataFrame,
     *,
@@ -676,58 +502,6 @@ def validate_analysis_dataframe(
                     f"Row {row_index} tool {tool_name} must have "
                     "five unique prompts."
                 )
-
-
-def run_attacks(
-    *,
-    designer: Any,
-    targets: pd.DataFrame,
-    builder_factory: Callable[
-        [pd.DataFrame], dd.DataDesignerConfigBuilder
-    ],
-    run_id: str,
-    model_repr: str,
-    batch_size: int | None = None,
-    max_completion_attempts: int = 3,
-) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Run the attack graph with NDD resume and exact branch coverage."""
-    if batch_size is not None and batch_size != len(targets):
-        raise ValueError(
-            "Do not partition attacks manually; NDD RunConfig.buffer_size "
-            "owns checkpoint batching."
-        )
-    branch_keys: list[str] = [
-        "profile_slot",
-        "domain",
-        "target_tool",
-        "attack_prompt_rank",
-        "analysis_attack_prompt",
-    ]
-    dataframe, attempts, builder = generate_exact_rows(
-        designer=designer,
-        seed=targets,
-        builder_factory=builder_factory,
-        dataset_prefix=f"agent-redteam-attacks-{run_id}",
-        key_columns=branch_keys,
-        normalize=lambda frame: normalize_nested_columns(
-            normalize_analysis_column(expose_profile_columns(frame)),
-            ["target_analysis", "attack_2", "verdict_1", "verdict_2"],
-        ),
-        max_completion_attempts=max_completion_attempts,
-    )
-    snapshot: dict[str, Any] = {
-        "seed_stage": "03_attack_branches",
-        "seed_rows": len(targets),
-        "attacks_per_branch": 2,
-        "requested_rows_per_create": len(targets),
-        "checkpointing": "NDD ResumeMode.IF_POSSIBLE",
-        "completion_attempts": attempts,
-        "model": model_repr,
-        "columns": [
-            column.name for column in builder.get_column_configs()
-        ],
-    }
-    return dataframe, snapshot
 
 
 def check_general_api(
