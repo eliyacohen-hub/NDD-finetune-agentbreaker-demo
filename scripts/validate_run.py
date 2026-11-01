@@ -295,6 +295,34 @@ def main() -> None:
     )
     generated_train = load_jsonl(run / "datasets/attacker_chat_train.jsonl")
     generated_validation = load_jsonl(run / "datasets/attacker_chat_val.jsonl")
+    agent_by_messages = {
+        json.dumps(
+            nested(row["messages"]),
+            ensure_ascii=False,
+            sort_keys=True,
+        ): str(row["agent_id"])
+        for _, row in sft.iterrows()
+    }
+    generated_train_ids = {
+        agent_by_messages[
+            json.dumps(
+                record["messages"],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        ]
+        for record in generated_train
+    }
+    generated_validation_ids = {
+        agent_by_messages[
+            json.dumps(
+                record["messages"],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        ]
+        for record in generated_validation
+    }
     check(
         "quick_finetune_data",
         (len(quick_train), len(quick_validation)) == (512, 64),
@@ -308,11 +336,7 @@ def main() -> None:
         len(generated_train) + len(generated_validation) == len(sft)
         and bool(generated_train)
         and bool(generated_validation)
-        and {
-            str(record["agent_id"]) for record in generated_train
-        }.isdisjoint(
-            {str(record["agent_id"]) for record in generated_validation}
-        ),
+        and generated_train_ids.isdisjoint(generated_validation_ids),
         (
             f"{len(generated_train)} train, {len(generated_validation)} "
             "validation; all JSONL valid and agent-disjoint"
