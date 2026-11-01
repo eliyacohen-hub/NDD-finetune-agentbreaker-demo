@@ -25,7 +25,7 @@ pip install langgraph langchain langchain-openai langchain-core fastapi uvicorn 
 
 ```bash
 export NVIDIA_API_KEY=nvapi-...           # required
-export GEN_MODEL=nvidia/llama-3.3-nemotron-super-49b-v1   # optional (this is the default)
+export VICTIM_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b # optional default
 # base_url defaults to https://integrate.api.nvidia.com/v1
 ```
 
