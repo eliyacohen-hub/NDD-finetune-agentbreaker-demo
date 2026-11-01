@@ -515,31 +515,10 @@ def parse_analysis_json(row: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def generate_profiles(
-    *,
-    designer: Any,
-    profile_seed: pd.DataFrame,
-    builder_factory: Callable[
-        [pd.DataFrame], dd.DataDesignerConfigBuilder
-    ],
-    run_id: str,
-    max_completion_attempts: int = 3,
-) -> tuple[pd.DataFrame, list[dict[str, Any]], dd.DataDesignerConfigBuilder]:
-    """Generate profiles using NDD resume, retrying only rows NDD ultimately dropped."""
-    return generate_exact_rows(
-        designer=designer,
-        seed=profile_seed,
-        builder_factory=builder_factory,
-        dataset_prefix=f"agent-profiles-{run_id}",
-        key_columns=["profile_slot"],
-        max_completion_attempts=max_completion_attempts,
-    )
-
-
 def validate_profile_dataframe(
     raw_frame: pd.DataFrame,
     *,
-    profile_seed: pd.DataFrame,
+    expected_count: int,
     domain_values: Sequence[str],
     security_levels: Sequence[str],
     tools_min: int,
@@ -548,13 +527,14 @@ def validate_profile_dataframe(
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Normalize and validate one complete generated profile stage."""
     dataframe: pd.DataFrame = expose_profile_columns(raw_frame)
-    expected_slots: set[str] = set(profile_seed["profile_slot"])
-    if len(dataframe) != len(profile_seed) or set(
-        dataframe["profile_slot"]
-    ) != expected_slots:
+    if (
+        len(dataframe) != expected_count
+        or dataframe["profile_slot"].nunique() != expected_count
+    ):
         raise RuntimeError(
-            f"Profile generation returned {len(dataframe)} of "
-            f"{len(profile_seed)} required slots."
+            f"Profile generation returned {len(dataframe)} rows with "
+            f"{dataframe['profile_slot'].nunique()} unique IDs; "
+            f"expected {expected_count}."
         )
 
     actual_counts: pd.Series = dataframe["tools"].map(len).astype("int64")

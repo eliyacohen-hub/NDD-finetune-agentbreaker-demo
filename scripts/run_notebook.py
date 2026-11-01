@@ -127,14 +127,38 @@ def main() -> int:
     notebook_path = Path(args.notebook).resolve()
     repo = notebook_path.parent
     notebook = nbformat.read(notebook_path, as_version=4)
+    cell_index_by_id = {
+        str(cell.get("id")): index
+        for index, cell in enumerate(notebook.cells)
+    }
+    setup_cell_ids = {
+        "9464218a",
+        "b9232413",
+        "5e683646",
+        "effd1a62",
+        "6c01318f",
+        "fc351f47",
+        "6c605272",
+        "c51a6712",
+    }
+    setup_indices = {
+        cell_index_by_id[cell_id]
+        for cell_id in setup_cell_ids
+        if cell_id in cell_index_by_id
+    }
+    profile_index = cell_index_by_id["ffb97b46"]
+    stage3_index = cell_index_by_id["af0dcce0"]
+    stage4_summary_index = cell_index_by_id["f6575710"]
+    stage7_index = cell_index_by_id["d6b0f4d6"]
     if not args.resume_stage3 and not args.resume_stage4 and not args.resume_stage7:
         for cell in notebook.cells:
             if cell.cell_type == "code":
                 cell.outputs = []
                 cell.execution_count = None
     else:
-        notebook.cells[6].outputs = []
-        notebook.cells[6].execution_count = None
+        connectivity_index = cell_index_by_id["fc351f47"]
+        notebook.cells[connectivity_index].outputs = []
+        notebook.cells[connectivity_index].execution_count = None
     nbformat.write(notebook, notebook_path)
 
     manager = KernelManager(kernel_name="python3")
@@ -158,28 +182,32 @@ def main() -> int:
         execution_indices = [
             index
             for index, cell in enumerate(notebook.cells)
-            if cell.cell_type == "code" and index <= 11
+            if cell.cell_type == "code"
+            and (index in setup_indices or index == profile_index)
         ]
     elif args.resume_stage7:
         execution_indices = [
             index
             for index, cell in enumerate(notebook.cells)
             if cell.cell_type == "code"
-            and (index in {2, 3, 4, 5, 6, 8, 9} or index >= 30)
+            and (index in setup_indices or index >= stage7_index)
         ]
     elif args.resume_stage4:
         execution_indices = [
             index
             for index, cell in enumerate(notebook.cells)
             if cell.cell_type == "code"
-            and (index in {2, 3, 4, 5, 6, 8, 9} or index >= 18)
+            and (
+                index in setup_indices
+                or index >= stage4_summary_index
+            )
         ]
     elif args.resume_stage3:
         execution_indices = [
             index
             for index, cell in enumerate(notebook.cells)
             if cell.cell_type == "code"
-            and (index in {2, 3, 4, 5, 6, 8, 9} or index >= 15)
+            and (index in setup_indices or index >= stage3_index)
         ]
     else:
         execution_indices = [
@@ -194,7 +222,11 @@ def main() -> int:
     try:
         for index in execution_indices:
             cell = notebook.cells[index]
-            if args.resume_stage3 and not prepared_stage3 and index >= 15:
+            if (
+                args.resume_stage3
+                and not prepared_stage3
+                and index >= stage3_index
+            ):
                 stage3_outputs, _, stage3_failed = execute(
                     client,
                     (
@@ -228,7 +260,11 @@ def main() -> int:
                 prepared_stage3 = True
                 print("STAGE3_PREPARATION_READY", flush=True)
 
-            if args.resume_stage7 and not prepared_stage7 and index >= 30:
+            if (
+                args.resume_stage7
+                and not prepared_stage7
+                and index >= stage7_index
+            ):
                 preparation_outputs, _, preparation_failed = execute(
                     client,
                     (
@@ -260,7 +296,11 @@ def main() -> int:
                 prepared_stage7 = True
                 print("STAGE7_PREPARATION_READY", flush=True)
 
-            if args.resume_stage4 and not recovered_stage4 and index >= 18:
+            if (
+                args.resume_stage4
+                and not recovered_stage4
+                and index >= stage4_summary_index
+            ):
                 recovery_code = """
 stage_root = RUN_DIR / "stages"
 branch_records = json.loads(

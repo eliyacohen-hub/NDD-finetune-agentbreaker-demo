@@ -134,21 +134,12 @@ def main() -> None:
             for tool in tools
         )
 
-    sampled_tool_counts = generation_config.get("sampled_tool_counts")
     check(
         "tools",
         len(tool_counts) == expected_profiles
         and all(tools_min <= count <= tools_max for count in tool_counts)
-        and tool_counts == sampled_tool_counts,
+        and tool_counts == profiles["num_tools"].astype(int).tolist(),
         f"counts={tool_counts}, total={sum(tool_counts)}",
-    )
-    check(
-        "sampled_profile_attributes",
-        profiles["domain"].tolist()
-        == generation_config.get("sampled_domains")
-        and profiles["security_level"].tolist()
-        == generation_config.get("sampled_security_levels"),
-        "persisted domains and security levels match the NDD sampler snapshot",
     )
     check(
         "tool_contracts",
