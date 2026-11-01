@@ -161,14 +161,17 @@ def main() -> None:
         ),
     )
 
+    analysis_signatures = analyses["analysis"].map(nested).map(
+        lambda value: json.dumps(value, sort_keys=True)
+    )
     check(
         "analysis_rows",
         len(analyses) == expected_profiles
         and analyses["profile_slot"].nunique() == expected_profiles
-        and analyses["analysis_raw"].nunique() == expected_profiles,
+        and analysis_signatures.nunique() == expected_profiles,
         (
             f"{len(analyses)} rows, "
-            f"{analyses['analysis_raw'].nunique()} unique raw analyses"
+            f"{analysis_signatures.nunique()} unique analyses"
         ),
     )
     prompt_groups: list[tuple[int, int]] = []

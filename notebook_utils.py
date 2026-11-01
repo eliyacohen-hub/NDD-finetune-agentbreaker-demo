@@ -287,81 +287,68 @@ def assemble_agent_profile(row: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-class _ToolAnalysis(BaseModel):
+class ToolAnalysis(BaseModel):
     """Validated security analysis for one generated tool."""
 
+    tool_name: str
     functionality: str
     vulnerabilities: str
     exploit_strategies: str
     attack_prompts: list[str] = Field(min_length=5, max_length=5)
 
 
-class _AnalysisOutput(BaseModel):
+class AnalysisOutput(BaseModel):
     """Validated Garak-compatible analysis response."""
 
-    tool_analyses: dict[str, _ToolAnalysis]
+    tool_analyses: list[ToolAnalysis] = Field(min_length=1)
     priority_targets: list[str] = Field(default_factory=list)
 
 
-def _extract_json_object(text: str) -> dict[str, Any]:
-    """Extract the first valid JSON object from plain or reasoned model output."""
-    decoder = json.JSONDecoder()
-    for match in re.finditer(r"\{", text):
-        try:
-            parsed, _ = decoder.raw_decode(text[match.start() :])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            return cast(dict[str, Any], parsed)
-    raise ValueError("The model response did not contain a complete JSON object.")
-
-
-@dd.custom_column_generator(required_columns=["analysis_raw", "agent_profile"])
-def parse_analysis_json(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate exact tool coverage and five unique prompts per tool."""
-    raw_analysis: object = row.get("analysis_raw")
-    if not isinstance(raw_analysis, str):
-        raise TypeError("analysis_raw must be a string.")
-    validated = _AnalysisOutput.model_validate(
-        _extract_json_object(raw_analysis)
+@dd.custom_column_generator(
+    required_columns=["analysis_structured", "agent_profile"]
+)
+def assemble_tool_analysis(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert NDD's typed list into Garak's tool-name-keyed analysis object."""
+    structured = AnalysisOutput.model_validate(
+        profile_mapping(row["analysis_structured"], "analysis_structured")
     )
-
-    profile_value: object = row.get("agent_profile")
-    if isinstance(profile_value, BaseModel):
-        profile_value = profile_value.model_dump(mode="python")
-    if not isinstance(profile_value, Mapping):
-        raise TypeError("agent_profile must be a mapping.")
-    normalized_profile: Any = json_safe(dict(profile_value))
-    if not isinstance(normalized_profile, dict):
-        raise TypeError("Normalized agent_profile must be a dictionary.")
-    tools_value: object = normalized_profile.get("tools", [])
-    if not isinstance(tools_value, list):
-        raise TypeError("agent_profile.tools must normalize to a list.")
-
+    profile = profile_mapping(row["agent_profile"], "agent_profile")
+    tools: object = profile.get("tools")
+    if not isinstance(tools, list):
+        raise TypeError("agent_profile.tools must be a list.")
     declared_names: set[str] = {
         str(tool.get("name"))
-        for tool in tools_value
+        for tool in tools
         if isinstance(tool, Mapping) and tool.get("name")
     }
-    analyzed_names: set[str] = set(validated.tool_analyses)
-    if analyzed_names != declared_names:
-        raise ValueError(
-            "Analysis must cover exactly the declared tools: "
-            f"missing={sorted(declared_names - analyzed_names)}, "
-            f"unexpected={sorted(analyzed_names - declared_names)}."
-        )
-    for tool_name, tool_analysis in validated.tool_analyses.items():
+
+    analyses: dict[str, dict[str, Any]] = {}
+    for item in structured.tool_analyses:
+        name: str = item.tool_name.strip()
         prompts: list[str] = [
-            prompt.strip() for prompt in tool_analysis.attack_prompts
+            prompt.strip() for prompt in item.attack_prompts
         ]
+        if not name or name in analyses:
+            raise ValueError(f"Duplicate or empty analyzed tool name: {name!r}")
         if len(set(prompts)) != 5 or any(not prompt for prompt in prompts):
             raise ValueError(
-                f"Tool {tool_name!r} must contain five non-empty unique prompts."
+                f"Tool {name!r} must contain five unique non-empty prompts."
             )
-        tool_analysis.attack_prompts = prompts
+        payload = item.model_dump(mode="python", exclude={"tool_name"})
+        payload["attack_prompts"] = prompts
+        analyses[name] = payload
 
+    if set(analyses) != declared_names:
+        raise ValueError(
+            "Analysis must cover exactly the declared tools: "
+            f"missing={sorted(declared_names - set(analyses))}, "
+            f"unexpected={sorted(set(analyses) - declared_names)}."
+        )
     result: dict[str, Any] = dict(row)
-    result["analysis"] = validated.model_dump(mode="python")
+    result["analysis"] = {
+        "tool_analyses": analyses,
+        "priority_targets": structured.priority_targets,
+    }
     return result
 
 
