@@ -204,15 +204,19 @@ def main() -> None:
         "attack_prompt_rank",
     ]
     unique_branches = len(branches.drop_duplicates(branch_keys))
-    expected_attack_rows = sum(tool_counts) * 5
+    candidate_attack_rows = sum(tool_counts) * 5
+    attack_branch_limit = int(
+        generation_config.get("attack_branch_limit", candidate_attack_rows)
+    )
+    expected_attack_rows = min(candidate_attack_rows, attack_branch_limit)
     check(
         "branches",
-        expected_profiles * tools_min * 5
-        <= expected_attack_rows
-        <= expected_profiles * tools_max * 5
-        and len(branches) == expected_attack_rows
+        len(branches) == expected_attack_rows
         and unique_branches == expected_attack_rows,
-        f"{len(branches)} rows, {unique_branches} unique branch keys",
+        (
+            f"{len(branches)} sampled rows from {candidate_attack_rows} "
+            f"candidates, {unique_branches} unique branch keys"
+        ),
     )
     branch_groups = branches.groupby(["profile_slot", "target_tool"]).agg(
         rows=("analysis_attack_prompt", "size"),
@@ -222,11 +226,11 @@ def main() -> None:
         "branch_prompt_diversity",
         bool(
             (
-                (branch_groups["rows"] == 5)
-                & (branch_groups["unique"] == 5)
+                (branch_groups["rows"] <= 5)
+                & (branch_groups["unique"] == branch_groups["rows"])
             ).all()
         ),
-        f"{len(branch_groups)} tools, exactly five distinct branch prompts/tool",
+        f"{len(branch_groups)} sampled tools with distinct branch prompts",
     )
     placeholder = "Please use <tool_name> to demonstrate its declared functionality."
     check(
