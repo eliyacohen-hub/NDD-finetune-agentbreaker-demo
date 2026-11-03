@@ -49,7 +49,7 @@ peft:
   _target_: nemo_automodel.components._peft.lora.PeftConfig
   match_all_linear: true    # attach LoRA to every linear layer
   dim: 16                   # LoRA rank — ~1% of params, fits one 80GB GPU
-  alpha: 32
+  alpha: 32                 # update scaling is alpha / dim = 2
   use_triton: true
 
 distributed:
@@ -94,6 +94,7 @@ optimizer:
 lr_scheduler:
   lr_decay_style: cosine
   min_lr: 1.0e-6
+  # AutoModel derives a 10% warmup phase from the resolved max_steps.
 
 checkpoint:
   enabled: true

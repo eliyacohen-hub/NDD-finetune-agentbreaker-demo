@@ -228,6 +228,11 @@ def run_garak(
         matches = sorted(runs_dir.glob(f"{report_prefix}*.report.jsonl"))
         if matches:
             report = matches[-1]
+    if not report.is_file():
+        raise FileNotFoundError(
+            f"Garak exited successfully but no report was found for {report_prefix} "
+            f"below {runs_dir}."
+        )
     print(f"[run_scan] report: {report}", flush=True)
     return report
 
@@ -242,7 +247,11 @@ def scan(
     detector_uri: str = NVIDIA_BUILD_URI,
     nim_api_key: str | None = None,
     config_out: str | Path | None = None,
+    agent_uri: str = "http://localhost:8000/v1/chat/completions",
     agent_config_file: str = "agent_breaker/agent.yaml",
+    generations: int = 1,
+    max_calls_per_conversation: int = 4,
+    max_attempts_per_tool: int = 1,
 ) -> Path:
     """Convenience: build config, render it, run garak, return the report path."""
     agent_config_path = Path(agent_config_file)
@@ -261,7 +270,11 @@ def scan(
         red_team_model=red_team_model,
         detector_uri=detector_uri,
         detector_model=detector_model,
+        agent_uri=agent_uri,
         agent_config_file=agent_config_file,
+        generations=generations,
+        max_calls_per_conversation=max_calls_per_conversation,
+        max_attempts_per_tool=max_attempts_per_tool,
     )
     config_out = config_out or (Path("garak_eval") / f"scan_{report_prefix}.yaml")
     render_config(cfg, config_out)
@@ -288,6 +301,18 @@ def _parse_args(argv=None):
         default=os.environ.get("NVIDIA_API_KEY"),
         help="Key for hosted models (defaults to $NVIDIA_API_KEY)",
     )
+    p.add_argument(
+        "--agent-uri",
+        default="http://localhost:8000/v1/chat/completions",
+    )
+    p.add_argument(
+        "--agent-config-file",
+        default="agent_breaker/agent.yaml",
+    )
+    p.add_argument("--config-out", default=None)
+    p.add_argument("--generations", type=int, default=1)
+    p.add_argument("--max-calls-per-conversation", type=int, default=4)
+    p.add_argument("--max-attempts-per-tool", type=int, default=1)
     return p.parse_args(argv)
 
 
@@ -301,6 +326,12 @@ def main(argv=None) -> None:
         detector_uri=args.detector_uri,
         detector_model=args.detector_model,
         nim_api_key=args.nim_api_key,
+        agent_uri=args.agent_uri,
+        agent_config_file=args.agent_config_file,
+        config_out=args.config_out,
+        generations=args.generations,
+        max_calls_per_conversation=args.max_calls_per_conversation,
+        max_attempts_per_tool=args.max_attempts_per_tool,
     )
     print(report)
 

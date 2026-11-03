@@ -39,6 +39,6 @@ nbformat==5.11.1
 ipykernel==7.4.0
 
 # NOTE (GPU, installed in the container, not pinned here):
-#   nemo-automodel==0.3.0  peft==0.21.2  mamba-ssm==2.3.2.post1
+#   nemo-automodel==0.2.0rc0  peft==0.21.2  mamba-ssm==2.3.2.post1
 #   causal-conv1d==1.7.0   accelerate>=1.13  torch  transformers  vllm
 # NOTE (evaluation): Garak is built into a pinned Docker image by setup.sh.

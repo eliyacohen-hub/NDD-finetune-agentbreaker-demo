@@ -20,8 +20,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 AUTOMODEL_IMAGE = os.environ.get(
-    "AUTOMODEL_IMAGE", "nvcr.io/nvidia/nemo-automodel:25.11.00"
+    "AUTOMODEL_IMAGE",
+    (
+        "nvcr.io/nvidia/nemo-automodel@"
+        "sha256:c4f613005518d520c2ac3d9206d95617a2385f86cf8aa09582aad8d35957e2f2"
+    ),
 )
+AUTOMODEL_VERSION = "0.2.0rc0"
 VLLM_IMAGE = os.environ.get("VLLM_IMAGE", "vllm/vllm-openai:v0.17.1")
 GARAK_REVISION = os.environ.get(
     "GARAK_REVISION", "4b7761c2108446043012549cbe8f7c942cabb26d"
@@ -112,9 +117,31 @@ def main() -> None:
     for index, cell in enumerate(notebook.cells):
         if cell.cell_type == "code":
             compile(cell.source, f"{notebook_path.name}:cell-{index}", "exec")
+    notebook_source = "\n".join(
+        str(cell.source) for cell in notebook.cells
+    )
+    for heading in (
+        "## 1 — Probe mechanics",
+        "## 2 — NeMo Data Designer",
+        "## 3 — Quality and SFT data funnel",
+        "## 4 — One-GPU LoRA fine-tuning",
+        "## 5 — Matched evaluation",
+    ):
+        if heading not in notebook_source:
+            raise ValueError(f"Notebook is missing learning section: {heading}")
+    for control in (
+        "TRAIN_DATASET_MODE",
+        "TRAIN_LEARNING_RATE",
+        "LORA_DIM",
+        "LORA_ALPHA",
+        "EVAL_EXPECTED_ATTEMPTS_PER_RUN",
+        "compare_run_matrix",
+    ):
+        if control not in notebook_source:
+            raise ValueError(f"Notebook is missing workshop control: {control}")
     print(
         f"Notebook schema: {len(notebook.cells)} cells; "
-        f"{len(code_cells)} code cells compiled"
+        f"{len(code_cells)} code cells compiled; learning sections present"
     )
 
     train_count = validate_jsonl(
@@ -149,6 +176,21 @@ def main() -> None:
     if not args.skip_images:
         for image in (AUTOMODEL_IMAGE, VLLM_IMAGE, GARAK_IMAGE):
             run(["docker", "image", "inspect", image], quiet=True)
+        run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                AUTOMODEL_IMAGE,
+                "python",
+                "-c",
+                (
+                    "import importlib.metadata as m; "
+                    f"assert m.version('nemo-automodel') == '{AUTOMODEL_VERSION}'"
+                ),
+            ],
+            quiet=True,
+        )
         run(["docker", "run", "--rm", GARAK_IMAGE, "--version"], quiet=True)
         run(
             [

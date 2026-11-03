@@ -15,12 +15,15 @@ production deployment.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
-OUTBOX_PATH = DATA_DIR / "outbox.json"
+OUTBOX_PATH = Path(
+    os.environ.get("AGENT_OUTBOX_PATH", str(DATA_DIR / "outbox.json"))
+)
 
 
 def _load(name: str) -> Any:

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,20 +64,27 @@ def main() -> None:
     branches = pd.read_parquet(run / "stages/03-attack-branches/dataframe.parquet")
     attacks = pd.read_parquet(run / "stages/04-attack-results/dataframe.parquet")
     sft = pd.read_parquet(run / "stages/05-sft-records/dataframe.parquet")
-    evaluation = pd.read_parquet(
-        run / "stages/06-evaluation-summary/dataframe.parquet"
-    )
     manifest = json.loads((run / "manifest.json").read_text())
     config = json.loads((run / "config/run_config.json").read_text())
+    evaluation_enabled = bool(config["evaluation"].get("enabled", True))
+    evaluation = (
+        pd.read_parquet(
+            run / "stages/06-evaluation-summary/dataframe.parquet"
+        )
+        if evaluation_enabled
+        else pd.DataFrame()
+    )
     generation_config = config["generation"]
-    expected_profiles = int(generation_config["agents"])
+    expected_candidates = int(generation_config["profile_candidate_count"])
+    expected_selected = int(generation_config["selected_profile_count"])
+    selected_slots = set(generation_config["selected_profile_slots"])
     tools_min = int(generation_config["tools_min"])
     tools_max = int(generation_config["tools_max"])
 
     check(
         "profiles",
-        len(profiles) == expected_profiles
-        and profiles["profile_slot"].nunique() == expected_profiles
+        len(profiles) == expected_candidates
+        and profiles["profile_slot"].nunique() == expected_candidates
         and profiles["domain"].isin(generation_config["domain_values"]).all(),
         (
             f"{len(profiles)} rows, {profiles['profile_slot'].nunique()} unique "
@@ -136,7 +145,7 @@ def main() -> None:
 
     check(
         "tools",
-        len(tool_counts) == expected_profiles
+        len(tool_counts) == expected_candidates
         and all(tools_min <= count <= tools_max for count in tool_counts)
         and tool_counts == profiles["num_tools"].astype(int).tolist(),
         f"counts={tool_counts}, total={sum(tool_counts)}",
@@ -155,10 +164,84 @@ def main() -> None:
         "security_policies",
         all(concrete_policies) and assembled_profile_used,
         (
-            f"{sum(concrete_policies)}/{expected_profiles} profiles correctly "
+            f"{sum(concrete_policies)}/{expected_candidates} profiles correctly "
             "assemble the generated "
             "policy, with permissive instructions empty"
         ),
+    )
+
+    quality_scores = profiles["profile_quality"].map(nested).map(
+        lambda value: value.get("overall_quality", {}).get("score")
+    )
+    selected_profile_rows = profiles.loc[
+        profiles["selected_for_analysis"].astype(bool)
+    ]
+    expected_ranks = list(range(1, expected_candidates + 1))
+
+    def profile_fingerprint(row: pd.Series) -> str:
+        payload = {
+            "domain": row["domain"],
+            "num_tools": int(row["num_tools"]),
+            "security_level": row["security_level"],
+            "profile_core": nested(row["profile_core"]),
+            "security_instruction": row["security_instruction"],
+            "agent_profile": nested(row["full_profile"]),
+        }
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    recomputed_fingerprints = profiles.apply(profile_fingerprint, axis=1)
+    expected_order = (
+        profiles.assign(_recomputed_fingerprint=recomputed_fingerprints)
+        .sort_values(
+            by=[
+                "profile_quality_score",
+                "_recomputed_fingerprint",
+                "profile_slot",
+            ],
+            ascending=[False, True, True],
+            kind="mergesort",
+        )["profile_slot"]
+        .tolist()
+    )
+    check(
+        "profile_quality_selection",
+        quality_scores.map(
+            lambda score: isinstance(score, int)
+            and not isinstance(score, bool)
+            and 1 <= score <= 5
+        ).all()
+        and profiles["profile_selection_rank"].astype(int).tolist()
+        == expected_ranks
+        and profiles["profile_quality_tiebreak"].tolist()
+        == recomputed_fingerprints.tolist()
+        and profiles["profile_slot"].tolist() == expected_order
+        and len(selected_profile_rows) == expected_selected
+        and set(selected_profile_rows["profile_slot"]) == selected_slots,
+        (
+            f"{len(profiles)} scored candidates, "
+            f"{len(selected_profile_rows)} selected, "
+            f"scores={quality_scores.tolist()}"
+        ),
+    )
+    manifest_selection = manifest.get("profile_selection", {})
+    manifest_selected_slots = {
+        str(item["profile_slot"])
+        for item in manifest_selection.get("selected", [])
+    }
+    check(
+        "profile_selection_manifest",
+        int(manifest_selection.get("candidate_count", -1))
+        == expected_candidates
+        and int(manifest_selection.get("selected_count", -1))
+        == expected_selected
+        and manifest_selected_slots == selected_slots,
+        f"selected slots={sorted(selected_slots)}",
     )
 
     analysis_signatures = analyses["analysis"].map(nested).map(
@@ -166,14 +249,18 @@ def main() -> None:
     )
     check(
         "analysis_rows",
-        len(analyses) == expected_profiles
-        and analyses["profile_slot"].nunique() == expected_profiles
-        and analysis_signatures.nunique() == expected_profiles,
+        len(analyses) == expected_selected
+        and analyses["profile_slot"].nunique() == expected_selected
+        and analysis_signatures.nunique() == expected_selected
+        and set(analyses["profile_slot"]) == selected_slots,
         (
             f"{len(analyses)} rows, "
             f"{analysis_signatures.nunique()} unique analyses"
         ),
     )
+    selected_tool_counts: list[int] = [
+        len(nested(value)) for value in analyses["tools"]
+    ]
     prompt_groups: list[tuple[int, int]] = []
     for _, row in analyses.iterrows():
         tools = nested(row["tools"])
@@ -204,7 +291,7 @@ def main() -> None:
         "attack_prompt_rank",
     ]
     unique_branches = len(branches.drop_duplicates(branch_keys))
-    candidate_attack_rows = sum(tool_counts) * 5
+    candidate_attack_rows = sum(selected_tool_counts) * 5
     attack_branch_limit = int(
         generation_config.get("attack_branch_limit", candidate_attack_rows)
     )
@@ -270,19 +357,31 @@ def main() -> None:
     )
 
     successes = int(attacks["successful_attack"].sum())
+    dataset_config = config["datasets"]
+    accepted_outcomes = set(
+        dataset_config.get("accepted_outcomes", ["YES", "PARTIAL"])
+    )
     adaptive_successes = sum(
-        (
-            nested(verdict).get("attack_success", {}).get("score")
-            in ("YES", "PARTIAL")
-        )
+        nested(verdict).get("attack_success", {}).get("score")
+        in accepted_outcomes
         for verdict in attacks["verdict_2"]
+    )
+    expected_analysis_records = (
+        expected_selected
+        if dataset_config.get("include_analysis_records", True)
+        else 0
+    )
+    expected_exploit_records = (
+        adaptive_successes
+        if dataset_config.get("include_exploit_records", True)
+        else 0
     )
     check(
         "sft_records",
-        len(sft) == expected_profiles + adaptive_successes,
+        len(sft) == expected_analysis_records + expected_exploit_records,
         (
-            f"{len(sft)} rows = {expected_profiles} analyses + "
-            f"{adaptive_successes} "
+            f"{len(sft)} rows = {expected_analysis_records} analyses + "
+            f"{expected_exploit_records} "
             f"successful adaptive exploits ({successes} branches succeeded "
             "across either attempt)"
         ),
@@ -346,15 +445,24 @@ def main() -> None:
     recipe = yaml.safe_load(
         (run / "training/automodel_lora.run.yaml").read_text()
     )
+    training_config = config["training"]
+    resolved_train_path = Path(training_config["train_path"]).resolve()
+    resolved_validation_path = Path(
+        training_config["validation_path"]
+    ).resolve()
     check(
         "training_source",
-        recipe["dataset"]["path_or_dataset_id"].endswith(
-            "data/quick_finetune/agent_breaker_train.jsonl"
-        )
-        and recipe["validation_dataset"]["path_or_dataset_id"].endswith(
-            "data/quick_finetune/agent_breaker_validation.jsonl"
+        Path(recipe["dataset"]["path_or_dataset_id"]).resolve()
+        == resolved_train_path
+        and Path(
+            recipe["validation_dataset"]["path_or_dataset_id"]
+        ).resolve()
+        == resolved_validation_path
+        and training_config["dataset_mode"] in {"bundled", "generated"},
+        (
+            f"mode={training_config['dataset_mode']}; "
+            f"train={resolved_train_path}; validation={resolved_validation_path}"
         ),
-        "recipe points to bundled quick_finetune train/validation",
     )
     train_log = (run / "training/train.log").read_text(errors="replace")
     notebook = nbformat.read(repo / "ndd_nemotron_garak.ipynb", as_version=4)
@@ -363,8 +471,11 @@ def main() -> None:
         "single_gpu",
         "World size: 1" in train_log
         and "--nproc-per-node=1" in notebook_text
-        and "--gpus device=0" in notebook_text,
-        "world size 1, torchrun process count 1, GPU device 0",
+        and int(training_config["gpu_id"]) >= 0,
+        (
+            "world size 1, torchrun process count 1, "
+            f"GPU device {training_config['gpu_id']}"
+        ),
     )
     validation_losses = [
         (int(step), float(loss))
@@ -373,40 +484,94 @@ def main() -> None:
             train_log,
         )
     ]
-    check(
-        "training_loss",
-        len(validation_losses) >= 2
-        and validation_losses[-1][1] < validation_losses[0][1],
+    finite_validation = all(
+        math.isfinite(loss) for _, loss in validation_losses
+    )
+    loss_condition = bool(validation_losses) and finite_validation
+    if training_config["dataset_mode"] == "bundled":
+        loss_condition = (
+            len(validation_losses) >= 2
+            and validation_losses[-1][1] < validation_losses[0][1]
+            and finite_validation
+        )
+    loss_detail = (
         (
             f"validation loss {validation_losses[0][1]:.4f} -> "
             f"{validation_losses[-1][1]:.4f}; "
             f"{len(validation_losses)} validations"
-        ),
+        )
+        if validation_losses
+        else "no validation losses parsed"
     )
-    merged_weights = list((run / "training/merged_model").glob("*.safetensors"))
     check(
-        "merged_model",
-        (run / "training/merged_model/config.json").is_file()
-        and bool(merged_weights),
-        f"merged config and {len(merged_weights)} weight file(s) present",
+        "training_loss",
+        loss_condition,
+        loss_detail,
     )
+    if training_config.get("merge_after_training", True):
+        merged_weights = list(
+            (run / "training/merged_model").glob("*.safetensors")
+        )
+        check(
+            "merged_model",
+            (run / "training/merged_model/config.json").is_file()
+            and bool(merged_weights),
+            f"merged config and {len(merged_weights)} weight file(s) present",
+        )
 
-    check(
-        "evaluation",
-        len(evaluation) == 4 and bool((evaluation["total"] > 0).all()),
-        "; ".join(
-            (
-                f"{row['label']}: {int(row['hits'])}/{int(row['total'])} "
-                f"({row['ASR %']:.1f}%)"
+    evaluation_config = config["evaluation"]
+    if evaluation_enabled:
+        expected_evaluation_rows = len(
+            evaluation_config["attackers"]
+        ) * len(evaluation_config["victim_agents"])
+        expected_attempts = int(
+            evaluation_config["expected_attempts_per_run"]
+        )
+        matched_totals = (
+            evaluation.groupby("victim")["total"].nunique().eq(1).all()
+        )
+        check(
+            "evaluation",
+            len(evaluation) == expected_evaluation_rows
+            and bool((evaluation["total"] > 0).all())
+            and bool(matched_totals)
+            and bool((evaluation["total"] == expected_attempts).all())
+            and bool(
+                (
+                    evaluation["evaluated"]
+                    + evaluation["invalid_or_skipped"]
+                    == evaluation["total"]
+                ).all()
             )
-            for _, row in evaluation.iterrows()
-        ),
-    )
-    expected_manifest_stages = 6
+            and bool(
+                (
+                    evaluation["evaluated"] + evaluation["nones"]
+                    == evaluation["processed"]
+                ).all()
+            ),
+            "; ".join(
+                (
+                    f"{row['label']}: {int(row['hits'])}/{int(row['total'])} "
+                    f"({row['ASR %']:.1f}%), "
+                    f"skipped={int(row['invalid_or_skipped'])}"
+                )
+                for _, row in evaluation.iterrows()
+            ),
+        )
+    expected_manifest_stages = {
+        "01-profiles",
+        "02-tool-analysis",
+        "03-attack-branches",
+        "04-attack-results",
+        "05-sft-records",
+    }
+    if evaluation_enabled:
+        expected_manifest_stages.add("06-evaluation-summary")
+    actual_manifest_stages = set(manifest["stages"])
     check(
         "manifest",
-        len(manifest["stages"]) == expected_manifest_stages,
-        f"{len(manifest['stages'])} persisted stage entries",
+        actual_manifest_stages == expected_manifest_stages,
+        f"persisted stages={sorted(actual_manifest_stages)}",
     )
     code_cells = [cell for cell in notebook.cells if cell.cell_type == "code"]
     errors = [
@@ -464,13 +629,24 @@ def main() -> None:
             f"{(stages['05-sft-records'] - stages['04-attack-results']).total_seconds():.1f} sec"
         ),
         "fine_tuning": minutes((max(train_times) - min(train_times)).total_seconds()),
-        "merge_and_four_evaluations": minutes(
-            (
-                stages["06-evaluation-summary"] - max(train_times)
-            ).total_seconds()
+        "merge_and_evaluation": (
+            minutes(
+                (
+                    stages["06-evaluation-summary"] - max(train_times)
+                ).total_seconds()
+            )
+            if evaluation_enabled
+            else "evaluation disabled"
         ),
         "end_to_end": minutes(
-            (stages["06-evaluation-summary"] - created).total_seconds()
+            (
+                (
+                    stages["06-evaluation-summary"]
+                    if evaluation_enabled
+                    else stages["05-sft-records"]
+                )
+                - created
+            ).total_seconds()
         ),
     }
     report = {
@@ -478,8 +654,10 @@ def main() -> None:
         "validated_at_utc": datetime.now(UTC).isoformat(),
         "checks": checks,
         "metrics": {
-            "profiles": len(profiles),
-            "tools": sum(tool_counts),
+            "profile_candidates": len(profiles),
+            "selected_profiles": len(selected_profile_rows),
+            "candidate_tools": sum(tool_counts),
+            "selected_tools": sum(selected_tool_counts),
             "branches": len(branches),
             "attack_results": len(attacks),
             "successful_attack_branches": successes,

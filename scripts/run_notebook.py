@@ -110,32 +110,12 @@ def main() -> int:
         str(cell.get("id")): index
         for index, cell in enumerate(notebook.cells)
     }
-    setup_cell_ids = {
-        "9464218a",
-        "b9232413",
-        "5e683646",
-        "effd1a62",
-        "6c01318f",
-        "fc351f47",
-        "6c605272",
-        "c51a6712",
-    }
-    setup_indices = {
-        cell_index_by_id[cell_id]
-        for cell_id in setup_cell_ids
-        if cell_id in cell_index_by_id
-    }
-    profile_cell_ids = {
-        "ffb97b46",
-        "38c65510",
-        "d6564f97",
-        "bcfbc2b5",
-    }
-    profile_indices = {
-        cell_index_by_id[cell_id]
-        for cell_id in profile_cell_ids
-        if cell_id in cell_index_by_id
-    }
+    profile_end_id = "bcfbc2b5"
+    if profile_end_id not in cell_index_by_id:
+        raise RuntimeError(
+            f"Notebook is missing the profile preview cell {profile_end_id}."
+        )
+    profile_end_index = cell_index_by_id[profile_end_id]
     for cell in notebook.cells:
         if cell.cell_type == "code":
             cell.outputs = []
@@ -161,7 +141,7 @@ def main() -> int:
             index
             for index, cell in enumerate(notebook.cells)
             if cell.cell_type == "code"
-            and (index in setup_indices or index in profile_indices)
+            and index <= profile_end_index
         ]
     else:
         execution_indices = [
@@ -235,8 +215,8 @@ finetuned_server_process = subprocess.Popen(
     stderr=subprocess.STDOUT,
     text=True,
 )
-wait_for_service("http://localhost:8001/v1/models", timeout_seconds=900)
-wait_for_service("http://localhost:8002/v1/models", timeout_seconds=900)
+wait_for_service(f"http://localhost:{EVAL_BASE_PORT}/v1/models", timeout_seconds=900)
+wait_for_service(f"http://localhost:{EVAL_FINETUNED_PORT}/v1/models", timeout_seconds=900)
 print("Evaluation model servers are ready.")
 """
                 server_outputs, _, server_failed = execute(

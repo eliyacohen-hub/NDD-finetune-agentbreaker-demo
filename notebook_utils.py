@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -444,6 +448,126 @@ def validate_profile_dataframe(
     return dataframe, sampled_counts
 
 
+def extract_judge_integer(
+    verdict: object,
+    *,
+    score_name: str,
+    minimum: int = 1,
+    maximum: int = 5,
+) -> int:
+    """Extract and validate one integer score from an NDD judge result."""
+    payload: dict[str, Any] = profile_mapping(verdict, "judge verdict")
+    score_payload: object = payload.get(score_name)
+    if not isinstance(score_payload, Mapping):
+        raise TypeError(f"Judge verdict lacks score {score_name!r}.")
+    raw_score: object = score_payload.get("score")
+    if isinstance(raw_score, bool):
+        raise TypeError(f"Judge score {score_name!r} must be an integer.")
+    if isinstance(raw_score, int):
+        score: int = raw_score
+    elif isinstance(raw_score, str) and raw_score.strip().isdigit():
+        score = int(raw_score.strip())
+    else:
+        raise TypeError(f"Judge score {score_name!r} must be an integer.")
+    if not minimum <= score <= maximum:
+        raise ValueError(
+            f"Judge score {score_name!r}={score} is outside "
+            f"{minimum}–{maximum}."
+        )
+    return score
+
+
+def select_top_profiles(
+    raw_frame: pd.DataFrame,
+    *,
+    candidate_count: int,
+    selected_count: int,
+    score_column: str = "profile_quality",
+    score_name: str = "overall_quality",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Rank scored profile candidates and return all rows plus the selected rows."""
+    if not 1 <= selected_count <= candidate_count:
+        raise ValueError("selected_count must be between 1 and candidate_count.")
+    required: set[str] = {
+        "profile_slot",
+        "domain",
+        "num_tools",
+        "security_level",
+        "profile_core",
+        "security_instruction",
+        "agent_profile",
+        score_column,
+    }
+    missing: set[str] = required - set(raw_frame.columns)
+    if missing:
+        raise KeyError(f"Profile candidates are missing columns: {sorted(missing)}")
+    if (
+        len(raw_frame) != candidate_count
+        or raw_frame["profile_slot"].nunique() != candidate_count
+    ):
+        raise RuntimeError(
+            f"Expected {candidate_count} unique profile candidates, got "
+            f"{len(raw_frame)} rows and "
+            f"{raw_frame['profile_slot'].nunique()} unique slots."
+        )
+
+    ranked: pd.DataFrame = raw_frame.copy(deep=True)
+    ranked["profile_quality_score"] = ranked[score_column].map(
+        lambda verdict: extract_judge_integer(
+            verdict,
+            score_name=score_name,
+        )
+    )
+
+    fingerprint_fields: tuple[str, ...] = (
+        "domain",
+        "num_tools",
+        "security_level",
+        "profile_core",
+        "security_instruction",
+        "agent_profile",
+    )
+
+    def fingerprint(row: pd.Series) -> str:
+        payload: dict[str, Any] = {
+            field: json_safe(row[field]) for field in fingerprint_fields
+        }
+        serialized: str = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    ranked["profile_quality_tiebreak"] = ranked.apply(fingerprint, axis=1)
+    ranked = ranked.sort_values(
+        by=[
+            "profile_quality_score",
+            "profile_quality_tiebreak",
+            "profile_slot",
+        ],
+        ascending=[False, True, True],
+        kind="mergesort",
+    ).reset_index(drop=True)
+    ranked["profile_selection_rank"] = pd.Series(
+        range(1, len(ranked) + 1),
+        dtype="int64",
+    )
+    ranked["selected_for_analysis"] = (
+        ranked["profile_selection_rank"] <= selected_count
+    )
+    selected: pd.DataFrame = ranked.loc[
+        ranked["selected_for_analysis"]
+    ].copy(deep=True)
+    if len(selected) != selected_count:
+        raise RuntimeError(
+            f"Profile selection returned {len(selected)} rows; "
+            f"expected {selected_count}."
+        )
+    return ranked, selected
+
+
 def validate_analysis_dataframe(
     dataframe: pd.DataFrame,
     *,
@@ -849,8 +973,18 @@ def build_sft_records(
     *,
     analysis_prompt: str,
     exploit_prompt: str,
+    accepted_outcomes: Sequence[str] = ("YES", "PARTIAL"),
+    include_analysis_records: bool = True,
+    include_exploit_records: bool = True,
 ) -> tuple[list[dict[str, Any]], int, int, int]:
     """Build one analysis record per agent and successful adaptive exploits."""
+    accepted = {str(outcome).upper() for outcome in accepted_outcomes}
+    if not accepted or not accepted <= {"YES", "PARTIAL", "NO"}:
+        raise ValueError(
+            "accepted_outcomes must contain one or more of YES, PARTIAL, and NO."
+        )
+    if not include_analysis_records and not include_exploit_records:
+        raise ValueError("At least one SFT record type must be enabled.")
     analysis_records: list[dict[str, Any]] = []
     exploit_records: list[dict[str, Any]] = []
     analysis_agent_ids: set[str] = set()
@@ -869,7 +1003,7 @@ def build_sft_records(
             skipped_rows += 1
             continue
 
-        if agent_id not in analysis_agent_ids:
+        if include_analysis_records and agent_id not in analysis_agent_ids:
             analysis_records.append(
                 {
                     "messages": [
@@ -901,7 +1035,10 @@ def build_sft_records(
             )
             analysis_agent_ids.add(agent_id)
 
-        if row["attempt_2_score"] not in ("YES", "PARTIAL"):
+        if (
+            not include_exploit_records
+            or str(row["attempt_2_score"]).upper() not in accepted
+        ):
             continue
         target_analysis: object = row["target_analysis"]
         attack: object = row["attack_2"]
@@ -972,6 +1109,358 @@ def write_chat_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             )
 
 
+def count_jsonl_records(path: Path) -> int:
+    """Count non-empty JSONL records and fail on malformed JSON."""
+    count = 0
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Malformed JSONL at {path}:{line_number}: {error.msg}"
+                ) from error
+            messages = payload.get("messages") if isinstance(payload, dict) else None
+            if not isinstance(messages, list) or len(messages) < 2:
+                raise ValueError(
+                    f"Invalid chat record at {path}:{line_number}: "
+                    "messages must contain at least two turns."
+                )
+            for message in messages:
+                if (
+                    not isinstance(message, dict)
+                    or message.get("role") not in {"system", "user", "assistant"}
+                    or not isinstance(message.get("content"), str)
+                    or not message["content"].strip()
+                ):
+                    raise ValueError(
+                        f"Invalid chat message at {path}:{line_number}: "
+                        "role and non-empty content are required."
+                    )
+            count += 1
+    return count
+
+
+def prepare_training_recipe(
+    *,
+    template_path: Path,
+    output_path: Path,
+    checkpoint_dir: Path,
+    dataset_mode: str,
+    bundled_train_path: Path,
+    bundled_validation_path: Path,
+    generated_train_path: Path,
+    generated_validation_path: Path,
+    base_model: str,
+    epochs: int,
+    global_batch_size: int,
+    local_batch_size: int,
+    learning_rate: float,
+    optimizer: str,
+    lr_scheduler: str,
+    min_learning_rate: float,
+    weight_decay: float,
+    lora_dim: int,
+    lora_alpha: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Resolve workshop controls into one validated AutoModel run recipe."""
+    mode = dataset_mode.strip().lower()
+    if mode not in {"bundled", "generated"}:
+        raise ValueError("dataset_mode must be 'bundled' or 'generated'.")
+    if optimizer.strip().lower() != "adamw":
+        raise ValueError("This workshop recipe currently supports optimizer='adamw'.")
+    if lr_scheduler.strip().lower() != "cosine":
+        raise ValueError(
+            "This workshop recipe currently supports lr_scheduler='cosine'."
+        )
+    if epochs < 1:
+        raise ValueError("epochs must be positive.")
+    if local_batch_size < 1 or global_batch_size < local_batch_size:
+        raise ValueError(
+            "Batch sizes must be positive and global_batch_size must be at least "
+            "local_batch_size."
+        )
+    if learning_rate <= 0 or min_learning_rate < 0:
+        raise ValueError("Learning rates must be non-negative and lr must be positive.")
+    if min_learning_rate > learning_rate:
+        raise ValueError("min_learning_rate cannot exceed learning_rate.")
+    if weight_decay < 0:
+        raise ValueError("weight_decay cannot be negative.")
+    if lora_dim < 1 or lora_alpha < 1:
+        raise ValueError("LoRA dim and alpha must be positive.")
+
+    if mode == "bundled":
+        train_path = bundled_train_path
+        validation_path = bundled_validation_path
+    else:
+        train_path = generated_train_path
+        validation_path = generated_validation_path
+    for label, path in (
+        ("training", train_path),
+        ("validation", validation_path),
+    ):
+        if not path.is_file():
+            raise FileNotFoundError(f"Resolved {label} dataset does not exist: {path}")
+
+    train_records = count_jsonl_records(train_path)
+    validation_records = count_jsonl_records(validation_path)
+    if not train_records or not validation_records:
+        raise ValueError("Training and validation datasets must both be non-empty.")
+
+    effective_global_batch = min(global_batch_size, train_records)
+    if effective_global_batch < local_batch_size:
+        raise ValueError(
+            "The selected dataset has fewer records than local_batch_size."
+        )
+    if effective_global_batch % local_batch_size:
+        raise ValueError(
+            "Effective global_batch_size must be divisible by local_batch_size."
+        )
+    steps_per_epoch = max(
+        1,
+        (train_records + effective_global_batch - 1)
+        // effective_global_batch,
+    )
+    max_steps = steps_per_epoch * epochs
+
+    with template_path.open(encoding="utf-8") as recipe_file:
+        recipe: dict[str, Any] = yaml.safe_load(recipe_file)
+    recipe["model"]["pretrained_model_name_or_path"] = base_model
+    recipe["dataset"]["path_or_dataset_id"] = str(train_path)
+    recipe["validation_dataset"]["path_or_dataset_id"] = str(validation_path)
+    recipe["checkpoint"]["checkpoint_dir"] = str(checkpoint_dir)
+    recipe["rng"]["seed"] = seed
+    recipe["peft"]["dim"] = lora_dim
+    recipe["peft"]["alpha"] = lora_alpha
+    recipe["optimizer"]["_target_"] = "torch.optim.AdamW"
+    recipe["optimizer"]["lr"] = learning_rate
+    recipe["optimizer"]["weight_decay"] = weight_decay
+    recipe["lr_scheduler"]["lr_decay_style"] = "cosine"
+    recipe["lr_scheduler"]["min_lr"] = min_learning_rate
+    recipe["step_scheduler"].update(
+        {
+            "num_epochs": epochs,
+            "global_batch_size": effective_global_batch,
+            "local_batch_size": local_batch_size,
+            "max_steps": max_steps,
+            "val_every_steps": max(1, max_steps // 5),
+            "ckpt_every_steps": max_steps,
+        }
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as run_recipe_file:
+        yaml.safe_dump(recipe, run_recipe_file, sort_keys=False)
+
+    return {
+        "dataset_mode": mode,
+        "train_path": train_path,
+        "validation_path": validation_path,
+        "train_records": train_records,
+        "validation_records": validation_records,
+        "epochs": epochs,
+        "global_batch_size": effective_global_batch,
+        "local_batch_size": local_batch_size,
+        "gradient_accumulation_steps": max(
+            1, effective_global_batch // local_batch_size
+        ),
+        "steps_per_epoch": steps_per_epoch,
+        "max_steps": max_steps,
+        "warmup_steps": int(max_steps * 0.1),
+        "val_every_steps": recipe["step_scheduler"]["val_every_steps"],
+        "checkpoint_every_steps": recipe["step_scheduler"]["ckpt_every_steps"],
+        "base_model": base_model,
+        "optimizer": "AdamW",
+        "learning_rate": learning_rate,
+        "lr_scheduler": "cosine",
+        "min_learning_rate": min_learning_rate,
+        "weight_decay": weight_decay,
+        "lora_dim": lora_dim,
+        "lora_alpha": lora_alpha,
+        "lora_scaling": lora_alpha / lora_dim,
+        "seed": seed,
+        "recipe_path": output_path,
+        "checkpoint_dir": checkpoint_dir,
+    }
+
+
+def build_training_command(
+    *,
+    repo: Path,
+    recipe_path: Path,
+    gpu_id: int,
+    backend: str = "auto",
+    image: str = (
+        "nvcr.io/nvidia/nemo-automodel@"
+        "sha256:c4f613005518d520c2ac3d9206d95617a2385f86cf8aa09582aad8d35957e2f2"
+    ),
+) -> tuple[list[str], str]:
+    """Build the exact one-GPU native or Docker training command."""
+    requested = backend.strip().lower()
+    if requested not in {"auto", "native", "docker"}:
+        raise ValueError("backend must be 'auto', 'native', or 'docker'.")
+    resolved = (
+        "native"
+        if requested == "auto" and shutil.which("torchrun") is not None
+        else "docker"
+        if requested == "auto"
+        else requested
+    )
+    native_command = [
+        "torchrun",
+        "--nproc-per-node=1",
+        "training/finetune.py",
+        "--config",
+        str(recipe_path),
+    ]
+    if resolved == "native":
+        return native_command, resolved
+    return (
+        [
+            "docker",
+            "run",
+            "--gpus",
+            f"device={gpu_id}",
+            "--ipc=host",
+            "--rm",
+            "-e",
+            "NVIDIA_API_KEY",
+            "-v",
+            "finetune-demo-hf-cache:/root/.cache/huggingface",
+            "-v",
+            f"{repo}:{repo}",
+            "-w",
+            str(repo),
+            image,
+            *native_command,
+        ],
+        resolved,
+    )
+
+
+def run_streaming_command(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    log_path: Path,
+    extra_env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run a command while streaming identical output to the notebook and a log."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    started = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log_file:
+        process = subprocess.Popen(
+            list(command),
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            log_file.write(line)
+            log_file.flush()
+        return_code = process.wait()
+    elapsed_seconds = time.monotonic() - started
+    if return_code != 0:
+        raise RuntimeError(
+            f"Command failed with exit code {return_code}. Inspect {log_path}."
+        )
+    return {
+        "command": list(command),
+        "log_path": log_path,
+        "elapsed_seconds": elapsed_seconds,
+        "return_code": return_code,
+    }
+
+
+def find_best_lora_adapter(checkpoint_dir: Path) -> Path:
+    """Locate AutoModel's best validation adapter with a clear failure."""
+    preferred = checkpoint_dir / "LOWEST_VAL" / "model"
+    if (preferred / "adapter_config.json").is_file():
+        return preferred
+    candidates = sorted(checkpoint_dir.glob("**/adapter_config.json"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No LoRA adapter_config.json was found below {checkpoint_dir}."
+        )
+    return candidates[-1].parent
+
+
+def build_merge_command(
+    *,
+    repo: Path,
+    adapter_path: Path,
+    output_path: Path,
+    base_model: str,
+    gpu_id: int,
+    backend: str = "auto",
+    image: str = (
+        "nvcr.io/nvidia/nemo-automodel@"
+        "sha256:c4f613005518d520c2ac3d9206d95617a2385f86cf8aa09582aad8d35957e2f2"
+    ),
+) -> tuple[list[str], str]:
+    """Build the native or Docker command that merges a trained LoRA adapter."""
+    requested = backend.strip().lower()
+    if requested not in {"auto", "native", "docker"}:
+        raise ValueError("backend must be 'auto', 'native', or 'docker'.")
+    native_available = (
+        importlib.util.find_spec("torch") is not None
+        and importlib.util.find_spec("transformers") is not None
+        and importlib.util.find_spec("peft") is not None
+    )
+    resolved = (
+        "native"
+        if requested == "auto" and native_available
+        else "docker"
+        if requested == "auto"
+        else requested
+    )
+    native_command = [
+        sys.executable if resolved == "native" else "python",
+        "training/merge_lora.py",
+        "--adapter",
+        str(adapter_path),
+        "--output",
+        str(output_path),
+        "--base-model",
+        base_model,
+        "--trust-remote-code",
+        "--dtype",
+        "bfloat16",
+    ]
+    if resolved == "native":
+        return native_command, resolved
+    return (
+        [
+            "docker",
+            "run",
+            "--gpus",
+            f"device={gpu_id}",
+            "--ipc=host",
+            "--rm",
+            "-v",
+            "finetune-demo-hf-cache:/root/.cache/huggingface",
+            "-v",
+            f"{repo}:{repo}",
+            "-w",
+            str(repo),
+            image,
+            *native_command,
+        ],
+        resolved,
+    )
+
+
 def parse_loss_log(path: Path) -> tuple[list[int], list[float], list[int], list[float]]:
     """Parse training and validation step/loss pairs from an AutoModel log."""
     train_steps: list[int] = []
@@ -1000,13 +1489,25 @@ def parse_loss_log(path: Path) -> tuple[list[int], list[float], list[int], list[
     return train_steps, train_losses, val_steps, val_losses
 
 
-def serve_agent(repo: Path, agent_name: str) -> subprocess.Popen[bytes]:
-    """Start one bundled victim agent on port 8000."""
+def serve_agent(
+    repo: Path,
+    agent_name: str,
+    *,
+    state_dir: Path | None = None,
+) -> subprocess.Popen[bytes]:
+    """Start one bundled victim agent on port 8000 with optional isolated state."""
     if agent_name not in {"research", "devops"}:
         raise ValueError(f"Unknown victim agent: {agent_name}")
+    env = os.environ.copy()
+    if state_dir is not None:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        env["AGENT_OUTBOX_PATH"] = str(
+            state_dir / f"outbox-{uuid.uuid4().hex}.json"
+        )
     return subprocess.Popen(
         [sys.executable, "agents/server.py", agent_name],
         cwd=repo,
+        env=env,
     )
 
 
