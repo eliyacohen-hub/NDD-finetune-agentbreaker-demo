@@ -182,3 +182,15 @@ Success Rate** (landed attacks / configured attempt budget). Invalid attacker ou
 counts as a non-hit so denominators remain matched, while evaluated and skipped
 attempt counts remain visible. Every attacker/victim pair starts a fresh victim
 process so state-changing tools cannot influence the next comparison run.
+
+## Run on NVIDIA Brev
+
+Deploy the launchable with a single 80 GB GPU (H100/A100) and set its setup script to:
+
+```bash
+bash brev/setup.sh
+```
+
+Optional launchable environment variables: `NGC_API_KEY` (pull the training image) and
+`NVIDIA_API_KEY` (pre-fill `.env`). Then open JupyterLab, select the `finetune-demo (.venv)`
+kernel, and run `ndd_nemotron_garak_workshop.ipynb`. Setup output is logged to `~/brev-setup.log`.
