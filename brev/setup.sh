@@ -13,13 +13,13 @@ cd "${ROOT}"
 exec > >(tee -a "${HOME}/brev-setup.log") 2>&1
 echo "=== Brev setup started $(date -u +%FT%TZ) ==="
 
-# setup.sh needs Python >= 3.11; Brev images often ship 3.10, so fetch one with uv.
+# Use a uv-managed Python 3.11: setup.sh needs >= 3.11, and the system Python on
+# Brev images often lacks ensurepip (python3-venv), which breaks `python -m venv`.
 export PATH="${HOME}/.local/bin:${PATH}"
-if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
-    command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-    uv python install 3.11
-    export PYTHON="$(uv python find 3.11)"
-fi
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+uv python install 3.11
+export PYTHON="$(uv python find 3.11)"
+[[ -x .venv/bin/pip ]] || rm -rf .venv   # discard a half-created venv from a failed run
 
 # Docker may need the docker group on a fresh instance.
 DOCKER_PREFIX=()
