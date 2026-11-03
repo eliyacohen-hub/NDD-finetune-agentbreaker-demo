@@ -24,7 +24,7 @@ fi
 # Docker may need the docker group on a fresh instance.
 DOCKER_PREFIX=()
 if command -v docker >/dev/null && ! docker info >/dev/null 2>&1; then
-    sudo usermod -aG docker "${USER}" || true
+    sudo usermod -aG docker "${USER:-$(id -un)}" || true
     DOCKER_PREFIX=(sg docker -c)
 fi
 
