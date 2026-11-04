@@ -51,9 +51,15 @@ if [[ -n "${NVIDIA_API_KEY:-}" && ! -f .env ]]; then
     chmod 600 .env
 fi
 
-# The notebooks request kernel "python3", which Jupyter resolves to Brev's own venv.
-# A user-level kernel with the same name takes precedence and points at our .venv.
-.venv/bin/python -m ipykernel install --user --name python3 --display-name ".venv (finetune-demo)"
+# The notebooks request kernel "python3". Brev's JupyterLab runs from its own venv, and
+# a venv ignores the user-level kernel directory, so the override must be installed into
+# that venv's prefix. The user-level copy covers any Jupyter that is not venv-based.
+JUPYTER_VENV="${HOME}/.venv"
+KERNEL_ARGS=(--name python3 --display-name ".venv (finetune-demo)")
+.venv/bin/python -m ipykernel install --user "${KERNEL_ARGS[@]}"
+if [[ -x "${JUPYTER_VENV}/bin/jupyter-lab" ]]; then
+    .venv/bin/python -m ipykernel install --prefix "${JUPYTER_VENV}" "${KERNEL_ARGS[@]}"
+fi
 
 # 2. Container images (training, serving, Garak). Needs registry access via NGC_API_KEY.
 IMAGES_OK=true
