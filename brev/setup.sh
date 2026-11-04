@@ -21,6 +21,13 @@ uv python install 3.11
 export PYTHON="$(uv python find 3.11)"
 [[ -x .venv/bin/pip ]] || rm -rf .venv   # discard a half-created venv from a failed run
 
+# The bundled training data is stored in Git LFS and a fresh clone only has pointer files.
+if ! command -v git-lfs >/dev/null; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq git-lfs
+fi
+git lfs install --local
+git lfs pull
+
 # Docker may need the docker group on a fresh instance.
 DOCKER_PREFIX=()
 if command -v docker >/dev/null && ! docker info >/dev/null 2>&1; then
