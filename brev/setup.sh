@@ -28,29 +28,42 @@ if command -v docker >/dev/null && ! docker info >/dev/null 2>&1; then
     DOCKER_PREFIX=(sg docker -c)
 fi
 
-ARGS=()
-if [[ -z "${NGC_API_KEY:-}" ]]; then
-    echo "NGC_API_KEY not set: installing the Python environment only."
-    ARGS+=(--skip-images)
-fi
+run_setup() {
+    if ((${#DOCKER_PREFIX[@]})); then
+        "${DOCKER_PREFIX[@]}" "PYTHON='${PYTHON}' NGC_API_KEY='${NGC_API_KEY:-}' ./setup.sh $*"
+    else
+        ./setup.sh "$@"
+    fi
+}
 
-if ((${#DOCKER_PREFIX[@]})); then
-    "${DOCKER_PREFIX[@]}" "PYTHON='${PYTHON:-python3}' NGC_API_KEY='${NGC_API_KEY:-}' ./setup.sh ${ARGS[*]:-}"
-else
-    ./setup.sh "${ARGS[@]}"
-fi
+# 1. Python environment first, so the notebook works even if the image steps fail.
+run_setup --skip-images
 
 if [[ -n "${NVIDIA_API_KEY:-}" && ! -f .env ]]; then
     printf 'NVIDIA_API_KEY=%s\n' "${NVIDIA_API_KEY}" > .env
     chmod 600 .env
 fi
 
-.venv/bin/python -m ipykernel install --user --name finetune-demo --display-name "finetune-demo (.venv)"
+# The notebooks request kernel "python3", which Jupyter resolves to Brev's own venv.
+# A user-level kernel with the same name takes precedence and points at our .venv.
+.venv/bin/python -m ipykernel install --user --name python3 --display-name ".venv (finetune-demo)"
+
+# 2. Container images (training, serving, Garak). Needs registry access via NGC_API_KEY.
+IMAGES_OK=true
+if [[ -z "${NGC_API_KEY:-}" ]]; then
+    IMAGES_OK=false
+    echo "WARNING: NGC_API_KEY not set; skipping container images."
+elif ! run_setup; then
+    IMAGES_OK=false
+    echo "WARNING: container image setup failed (see above). The notebook still opens;"
+    echo "  fix with: docker login nvcr.io -u '\$oauthtoken' && ./setup.sh"
+fi
 
 cat <<MSG
 
 === Brev setup complete ===
 Open JupyterLab from the Brev console and run:
-  ndd_nemotron_garak_workshop.ipynb   (kernel: finetune-demo (.venv))
+  ndd_nemotron_garak_workshop.ipynb   (kernel: .venv (finetune-demo), selected automatically)
+Container images ready: ${IMAGES_OK}
 Log: ${HOME}/brev-setup.log
 MSG
