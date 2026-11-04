@@ -19,6 +19,7 @@ import sys
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -1458,6 +1459,153 @@ def build_merge_command(
             *native_command,
         ],
         resolved,
+    )
+
+
+@dataclass(frozen=True)
+class TrainingRun:
+    """Outputs from one complete LoRA train-and-merge run."""
+
+    plan: dict[str, Any]
+    log_path: Path
+    adapter_path: Path
+    merged_model_path: Path
+    base_model: str
+    gpu_id: int
+
+    def save_configuration(
+        self,
+        run_configuration: dict[str, Any],
+        config_dir: Path,
+    ) -> None:
+        """Persist the resolved training plan in the notebook run configuration."""
+        run_configuration["training"] = {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in self.plan.items()
+        }
+        write_yaml_json(config_dir / "run_config", run_configuration)
+
+
+def train_and_merge_model(
+    *,
+    run_dir: Path,
+    dataset: str,
+    epochs: int,
+    learning_rate: float,
+    min_learning_rate: float,
+    weight_decay: float,
+    lora_rank: int,
+    lora_alpha: int,
+    seed: int = 42,
+    base_model: str = "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+    gpu_id: int = 0,
+    backend: str = "auto",
+    repo: Path | None = None,
+) -> TrainingRun:
+    """Train and merge LoRA while keeping infrastructure defaults out of the notebook."""
+    repo = repo or Path(__file__).resolve().parent
+    training_dir = run_dir / "training"
+    recipe_path = training_dir / "automodel_lora.run.yaml"
+    checkpoint_dir = training_dir / "checkpoints"
+    log_path = training_dir / "train.log"
+    merged_model_path = training_dir / "merged_model"
+
+    plan = prepare_training_recipe(
+        template_path=repo / "training" / "automodel_lora.yaml",
+        output_path=recipe_path,
+        checkpoint_dir=checkpoint_dir,
+        dataset_mode=dataset,
+        bundled_train_path=(
+            repo / "data" / "quick_finetune" / "agent_breaker_train.jsonl"
+        ),
+        bundled_validation_path=(
+            repo / "data" / "quick_finetune" / "agent_breaker_validation.jsonl"
+        ),
+        generated_train_path=run_dir / "datasets" / "attacker_chat_train.jsonl",
+        generated_validation_path=run_dir / "datasets" / "attacker_chat_val.jsonl",
+        base_model=base_model,
+        epochs=epochs,
+        global_batch_size=8,
+        local_batch_size=1,
+        learning_rate=learning_rate,
+        optimizer="adamw",
+        lr_scheduler="cosine",
+        min_learning_rate=min_learning_rate,
+        weight_decay=weight_decay,
+        lora_dim=lora_rank,
+        lora_alpha=lora_alpha,
+        seed=seed,
+    )
+    training_command, resolved_training_backend = build_training_command(
+        repo=repo,
+        recipe_path=recipe_path,
+        gpu_id=gpu_id,
+        backend=backend,
+    )
+    plan.update(
+        {
+            "backend": resolved_training_backend,
+            "gpu_id": gpu_id,
+            "merge_after_training": True,
+            "precision": "bfloat16",
+            "lora_target_mode": "all compatible linear layers",
+        }
+    )
+
+    print(
+        f"Training LoRA on {plan['train_records']} examples for {epochs} "
+        f"epoch(s) ({plan['max_steps']} optimizer steps)."
+    )
+    training_result = run_streaming_command(
+        training_command,
+        cwd=repo,
+        log_path=log_path,
+        extra_env={"CUDA_VISIBLE_DEVICES": str(gpu_id)},
+    )
+    adapter_path = find_best_lora_adapter(checkpoint_dir)
+    print(
+        f"Training finished in {training_result['elapsed_seconds'] / 60:.1f} "
+        "minutes. Merging the adapter..."
+    )
+
+    merge_command, resolved_merge_backend = build_merge_command(
+        repo=repo,
+        adapter_path=adapter_path,
+        output_path=merged_model_path,
+        base_model=base_model,
+        gpu_id=gpu_id,
+        backend=backend,
+    )
+    merge_result = run_streaming_command(
+        merge_command,
+        cwd=repo,
+        log_path=training_dir / "merge.log",
+        extra_env={"CUDA_VISIBLE_DEVICES": str(gpu_id)},
+    )
+    if not (merged_model_path / "config.json").is_file() or not list(
+        merged_model_path.glob("*.safetensors")
+    ):
+        raise RuntimeError(
+            f"Merged model artifacts are incomplete at {merged_model_path}."
+        )
+    plan.update(
+        {
+            "adapter_path": adapter_path,
+            "merged_model_path": merged_model_path,
+            "merge_backend": resolved_merge_backend,
+        }
+    )
+    print(
+        f"Merged model ready in {merge_result['elapsed_seconds'] / 60:.1f} "
+        f"minutes: {merged_model_path}"
+    )
+    return TrainingRun(
+        plan=plan,
+        log_path=log_path,
+        adapter_path=adapter_path,
+        merged_model_path=merged_model_path,
+        base_model=base_model,
+        gpu_id=gpu_id,
     )
 
 

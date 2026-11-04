@@ -124,16 +124,20 @@ def main() -> None:
         "## 1 — Probe mechanics",
         "## 2 — NeMo Data Designer",
         "## 3 — Quality and SFT data funnel",
-        "## 4 — One-GPU LoRA fine-tuning",
+        "## 4 — Train and merge the model",
         "## 5 — Matched evaluation",
     ):
         if heading not in notebook_source:
             raise ValueError(f"Notebook is missing learning section: {heading}")
     for control in (
         "TRAIN_DATASET_MODE",
+        "TRAIN_EPOCHS",
         "TRAIN_LEARNING_RATE",
+        "TRAIN_MIN_LEARNING_RATE",
+        "TRAIN_WEIGHT_DECAY",
         "LORA_DIM",
         "LORA_ALPHA",
+        "train_and_merge_model",
         "EVAL_EXPECTED_ATTEMPTS_PER_RUN",
         "compare_run_matrix",
     ):

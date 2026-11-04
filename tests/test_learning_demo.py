@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from notebook_utils import (
     prepare_training_recipe,
     select_top_profiles,
     serve_agent,
+    train_and_merge_model,
 )
 
 
@@ -168,6 +170,81 @@ class ProfileSelectionTests(unittest.TestCase):
 
 
 class TrainingPlanTests(unittest.TestCase):
+    def test_simple_training_api_exposes_only_main_learning_controls(self) -> None:
+        parameters = inspect.signature(train_and_merge_model).parameters
+        for name in (
+            "dataset",
+            "epochs",
+            "learning_rate",
+            "min_learning_rate",
+            "weight_decay",
+            "lora_rank",
+            "lora_alpha",
+        ):
+            self.assertIn(name, parameters)
+        for fixed_detail in (
+            "global_batch_size",
+            "local_batch_size",
+            "optimizer",
+            "lr_scheduler",
+        ):
+            self.assertNotIn(fixed_detail, parameters)
+
+    def test_simple_training_api_derives_and_merges_fixed_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            run_dir = repo / "run"
+            template = repo / "training" / "automodel_lora.yaml"
+            template.parent.mkdir(parents=True)
+            write_recipe(template)
+            write_jsonl(
+                repo / "data/quick_finetune/agent_breaker_train.jsonl",
+                8,
+            )
+            write_jsonl(
+                repo / "data/quick_finetune/agent_breaker_validation.jsonl",
+                2,
+            )
+            adapter = run_dir / "training/checkpoints/LOWEST_VAL/model"
+            adapter.mkdir(parents=True)
+            (adapter / "adapter_config.json").write_text("{}")
+            merged = run_dir / "training/merged_model"
+            merged.mkdir(parents=True)
+            (merged / "config.json").write_text("{}")
+            (merged / "model.safetensors").write_bytes(b"weights")
+
+            with patch(
+                "notebook_utils.run_streaming_command",
+                return_value={"elapsed_seconds": 1.0},
+            ):
+                result = train_and_merge_model(
+                    run_dir=run_dir,
+                    dataset="bundled",
+                    epochs=2,
+                    learning_rate=2e-5,
+                    min_learning_rate=1e-6,
+                    weight_decay=0.01,
+                    lora_rank=16,
+                    lora_alpha=32,
+                    base_model="nvidia/test-model",
+                    repo=repo,
+                )
+
+            recipe = yaml.safe_load(
+                (run_dir / "training/automodel_lora.run.yaml").read_text()
+            )
+            self.assertEqual(result.merged_model_path, merged)
+            self.assertEqual(result.plan["global_batch_size"], 8)
+            self.assertEqual(result.plan["precision"], "bfloat16")
+            self.assertEqual(
+                result.plan["lora_target_mode"],
+                "all compatible linear layers",
+            )
+            self.assertEqual(recipe["peft"], {"dim": 16, "alpha": 32})
+            self.assertEqual(recipe["optimizer"]["lr"], 2e-5)
+            self.assertEqual(recipe["optimizer"]["weight_decay"], 0.01)
+            self.assertEqual(recipe["lr_scheduler"]["min_lr"], 1e-6)
+
     def test_generated_recipe_resolves_all_controls(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -338,6 +415,9 @@ class NotebookContractTests(unittest.TestCase):
             "analysis_cb = analysis_builder(selected_profile_raw_df)",
             source,
         )
+        self.assertIn("train_and_merge_model(", source)
+        self.assertNotIn("TRAIN_GLOBAL_BATCH_SIZE", source)
+        self.assertIn("Fixed infrastructure and LoRA targeting options", source)
         self.assertIn(
             "summary_rows: list[dict[str, Any]] = list(all_summary_rows)",
             source,
@@ -355,13 +435,32 @@ class NotebookContractTests(unittest.TestCase):
         source = "\n".join(
             "".join(cell.get("source", [])) for cell in exercise["cells"]
         )
-        self.assertEqual(len(exercise["cells"]), len(main["cells"]))
+        self.assertGreaterEqual(len(exercise["cells"]), len(main["cells"]) - 1)
         self.assertIn("Exercise 2.2: add the profile-quality NDD judge", source)
         self.assertIn("Exercise 2.2: add the profile_core NDD column", source)
-        self.assertIn("Exercise 2.3: implement the tool-analysis output schemas", source)
+        self.assertIn(
+            "stage_a_ranked_raw_df, selected_profile_raw_df = select_top_profiles(",
+            source,
+        )
+        self.assertIn("Analysis budget selected", source)
+        self.assertNotIn("Exercise 2.2: select the top scored profiles", source)
+        self.assertIn("Hint: structured analysis column", source)
+        self.assertIn(
+            "attack_prompts: list[str] = Field(min_length=5, max_length=5)",
+            source,
+        )
+        self.assertNotIn("MIN_ATTACK_PROMPTS", source)
+        self.assertIn("generator_function=assemble_tool_analysis", source)
+        self.assertNotIn("TODO 2: add a CustomColumnConfig", source)
         self.assertIn("Exercise 2.4: implement the second adaptive loop", source)
         self.assertIn("Exercise 3: build SFT records", source)
-        self.assertIn("TRAIN_DATASET_MODE: Final[str] = None", source)
+        self.assertIn("TRAIN_EPOCHS: Final[int] = None", source)
+        self.assertIn("TRAIN_MIN_LEARNING_RATE: Final[float] = None", source)
+        self.assertIn("TRAIN_WEIGHT_DECAY: Final[float] = None", source)
+        self.assertIn("LORA_ALPHA: Final[int] = None", source)
+        self.assertIn("train_and_merge_model(", source)
+        self.assertNotIn("TRAIN_GLOBAL_BATCH_SIZE", source)
+        self.assertIn("Fixed infrastructure and LoRA targeting options", source)
         self.assertNotIn("Exercise 5.", source)
         self.assertGreaterEqual(source.count("<details><summary>Hint"), 6)
         self.assertNotIn("REFERENCE FALLBACK", source)
